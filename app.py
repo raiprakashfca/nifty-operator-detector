@@ -45,11 +45,11 @@ def get_kite_client():
     return kite
 
 
-@st.cache_resource(show_spinner=False)
 def get_nifty_option_instruments(kite: KiteConnect) -> pd.DataFrame:
     """
-    Fetch and cache NIFTY option instruments from NFO.
+    Fetch NIFTY option instruments from NFO.
     Filter only OPTIDX NIFTY contracts and pre-process expiry.
+    Not cached because KiteConnect object is not hashable.
     """
     try:
         instruments = kite.instruments("NFO")
@@ -215,6 +215,7 @@ def find_atm_ce_instrument(nifty_opt_df: pd.DataFrame, nifty_spot: float):
     today = date.today()
     ce_df = nifty_opt_df[
         (nifty_opt_df["strike"] == atm_strike)
+        & (nifty_opt_df["instrument_type"] == "OPTIDX")
         & (nifty_opt_df["instrument_type"] == "OPTIDX")
     ].copy()
 
@@ -485,7 +486,7 @@ def main():
         _ = st.slider("Auto-refresh every (seconds)", 5, 60, 15)
         st.caption(
             "For now, refresh manually with the rerun button or browser reload.\n"
-            "Phase 4 will add order-book based confirmation for big-call buying."
+            "Next phase will add order-book based confirmation for big-call buying."
         )
 
     kite = get_kite_client()
