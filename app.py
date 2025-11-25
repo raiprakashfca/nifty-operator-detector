@@ -2,6 +2,7 @@ import streamlit as st
 from kiteconnect import KiteConnect
 import pandas as pd
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 
 # --------- CONFIG: HEAVYWEIGHTS & INDEX ---------
@@ -63,7 +64,8 @@ def fetch_ltp_snapshot(kite: KiteConnect) -> pd.DataFrame:
     ltp_data = kite.ltp(instruments)
 
     rows = []
-    now = datetime.now()
+    now = datetime.now(ZoneInfo("Asia/Kolkata"))
+
 
     for instrument, data in ltp_data.items():
         # instrument is like "NSE:RELIANCE"
