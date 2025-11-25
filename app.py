@@ -216,7 +216,6 @@ def find_atm_ce_instrument(nifty_opt_df: pd.DataFrame, nifty_spot: float):
     ce_df = nifty_opt_df[
         (nifty_opt_df["strike"] == atm_strike)
         & (nifty_opt_df["instrument_type"] == "OPTIDX")
-        & (nifty_opt_df["instrument_type"] == "OPTIDX")
     ].copy()
 
     if ce_df.empty:
@@ -270,15 +269,83 @@ def fetch_atm_ce_quote(kite: KiteConnect, nifty_opt_df: pd.DataFrame, nifty_spot
         "ltp": last_price,
         "prev_close": prev_close,
         "pct_change": pct_change,
+        "instrument": instrument,
+    }
+
+
+# --------- ORDER BOOK / DEPTH LOGIC ---------
+def fetch_orderbook_for_atm_ce(kite: KiteConnect, atm_ce_info: dict):
+    """
+    Fetch depth (order book) for the ATM CE and compute:
+    - total bid qty
+    - total ask qty
+    - top bid/ask prices
+    - bid dominance ratio
+    """
+    if atm_ce_info is None:
+        return None
+
+    instrument = atm_ce_info.get("instrument")
+    if not instrument:
+        return None
+
+    try:
+        # quote() gives depth with buy/sell ladders
+        q = kite.quote([instrument])
+    except Exception as e:
+        st.error(f"Error fetching order book for ATM CE from Kite: {e}")
+        return None
+
+    if not q:
+        return None
+
+    data = list(q.values())[0]
+    depth = data.get("depth", {})
+    buy_levels = depth.get("buy", []) or []
+    sell_levels = depth.get("sell", []) or []
+
+    total_bid_qty = sum(level.get("quantity", 0) for level in buy_levels)
+    total_ask_qty = sum(level.get("quantity", 0) for level in sell_levels)
+
+    top_bid_price = buy_levels[0]["price"] if buy_levels else None
+    top_ask_price = sell_levels[0]["price"] if sell_levels else None
+
+    if total_ask_qty <= 0:
+        bid_dom_ratio = float("inf") if total_bid_qty > 0 else 0.0
+    else:
+        bid_dom_ratio = total_bid_qty / total_ask_qty
+
+    # Classification heuristic:
+    # - STRONG: bid_dom_ratio >= 2
+    # - MILD:   1.2 <= bid_dom_ratio < 2
+    # - NONE:   otherwise
+    if bid_dom_ratio >= 2.0 and total_bid_qty > 0:
+        footprint = "STRONG"
+        desc = "Bid side is heavily stacked vs ask – strong buying footprint."
+    elif bid_dom_ratio >= 1.2 and total_bid_qty > 0:
+        footprint = "MILD"
+        desc = "Bid side is somewhat dominant – mild buying footprint."
+    else:
+        footprint = "NONE"
+        desc = "No special dominance on bid side."
+
+    return {
+        "total_bid_qty": total_bid_qty,
+        "total_ask_qty": total_ask_qty,
+        "top_bid_price": top_bid_price,
+        "top_ask_price": top_ask_price,
+        "bid_dom_ratio": bid_dom_ratio,
+        "footprint": footprint,
+        "description": desc,
     }
 
 
 # --------- LAYOUT HELPERS ---------
 def layout_header():
-    st.title("NIFTY Operator Detector – Phase 3")
+    st.title("NIFTY Operator Detector – Phase 4")
     st.caption(
-        "Heavyweight suppression + ATM Call divergence. "
-        "Next step will add order-book footprints for big-call buying."
+        "Heavyweight suppression + ATM Call divergence + order-book footprint.\n"
+        "Use this to spot suppressed indices with aggressive call accumulation."
     )
 
 
@@ -316,8 +383,8 @@ def layout_suppression_section(df: pd.DataFrame):
         st.success(f"Suppression: {label} – {explanation}")
 
 
-def layout_atm_ce_section(atm_ce_info, nifty_change):
-    st.subheader("🎯 ATM Call Divergence Monitor")
+def layout_atm_ce_section(atm_ce_info, ob_info, nifty_change):
+    st.subheader("🎯 ATM Call Divergence & Order Book")
 
     if atm_ce_info is None:
         st.info("ATM NIFTY CE data not available yet.")
@@ -362,7 +429,7 @@ def layout_atm_ce_section(atm_ce_info, nifty_change):
 
     # Classify divergence: NIFTY weak, CE resilient/strong
     note = "No special divergence detected."
-    style = "neutral"
+    div_style = "neutral"
 
     if ce_chg is not None and not pd.isna(ce_chg):
         ce_chg_f = float(ce_chg)
@@ -373,28 +440,61 @@ def layout_atm_ce_section(atm_ce_info, nifty_change):
         # 2) Nifty down, CE down much less than underlying => mild accumulation
         if nifty_f <= -0.20:
             if ce_chg_f >= 0.0:
-                style = "strong"
+                div_style = "strong"
                 note = (
                     "NIFTY is weak, but ATM CE is flat or rising – "
                     "possible aggressive call accumulation."
                 )
             elif ce_chg_f > nifty_f + 3.0:
                 # e.g., Nifty -0.8%, CE only -0.2% => CE holding up
-                style = "mild"
+                div_style = "mild"
                 note = (
                     "NIFTY is weak, but ATM CE is holding up better – "
                     "mild sign of supportive call buying."
                 )
 
-    if style == "strong":
-        st.error(f"Signal: STRONG DIVERGENCE – {note}")
-    elif style == "mild":
-        st.warning(f"Signal: MILD DIVERGENCE – {note}")
+    # Show divergence signal
+    if div_style == "strong":
+        st.error(f"Divergence Signal: STRONG – {note}")
+    elif div_style == "mild":
+        st.warning(f"Divergence Signal: MILD – {note}")
     else:
-        st.info(f"Signal: NEUTRAL – {note}")
+        st.info(f"Divergence Signal: NEUTRAL – {note}")
+
+    # ---- ORDER BOOK FOOTPRINT ----
+    st.markdown("---")
+    st.markdown("**Order Book Footprint (ATM CE)**")
+
+    if ob_info is None:
+        st.info("Order book data not available.")
+        return
+
+    total_bid = ob_info["total_bid_qty"]
+    total_ask = ob_info["total_ask_qty"]
+    top_bid = ob_info["top_bid_price"]
+    top_ask = ob_info["top_ask_price"]
+    ratio = ob_info["bid_dom_ratio"]
+    footprint = ob_info["footprint"]
+    desc = ob_info["description"]
+
+    colb1, colb2, colb3, colb4 = st.columns(4)
+    colb1.metric("Total Bid Qty (top 5)", f"{int(total_bid)}")
+    colb2.metric("Total Ask Qty (top 5)", f"{int(total_ask)}")
+    colb3.metric(
+        "Bid/Aks Qty Ratio",
+        "-" if ratio in (0.0, float("inf")) else f"{ratio:.2f}",
+    )
+    colb4.metric("Top Bid / Ask", f"{fmt_price(top_bid)} / {fmt_price(top_ask)}")
+
+    if footprint == "STRONG":
+        st.error(f"Big Buyer Footprint: STRONG – {desc}")
+    elif footprint == "MILD":
+        st.warning(f"Big Buyer Footprint: MILD – {desc}")
+    else:
+        st.info(f"Big Buyer Footprint: NONE – {desc}")
 
 
-def layout_snapshot(df: pd.DataFrame, atm_ce_info):
+def layout_snapshot(df: pd.DataFrame, atm_ce_info, ob_info):
     if df is None or df.empty:
         st.warning("No data returned from Kite API.")
         return
@@ -439,8 +539,8 @@ def layout_snapshot(df: pd.DataFrame, atm_ce_info):
     # Suppression section
     layout_suppression_section(df)
 
-    # ATM CE divergence section (uses raw numeric nifty_change)
-    layout_atm_ce_section(atm_ce_info, nifty_change)
+    # ATM CE divergence + order book section
+    layout_atm_ce_section(atm_ce_info, ob_info, nifty_change)
 
     st.subheader("🏋️ Heavyweights Snapshot")
     _render_heavyweights_table(df)
@@ -486,7 +586,7 @@ def main():
         _ = st.slider("Auto-refresh every (seconds)", 5, 60, 15)
         st.caption(
             "For now, refresh manually with the rerun button or browser reload.\n"
-            "Next phase will add order-book based confirmation for big-call buying."
+            "Use this as a discretionary tool, not a blind auto-trader."
         )
 
     kite = get_kite_client()
@@ -502,14 +602,25 @@ def main():
         # Get NIFTY spot for ATM logic
         nifty_rows = df[df["Symbol"] == NIFTY_INDEX_SYMBOL]
         atm_ce_info = None
+        ob_info = None
 
         if not nifty_rows.empty:
             nifty_spot = nifty_rows.iloc[0]["LTP"]
-            if nifty_spot is not None and not pd.isna(nifty_spot) and not nifty_opt_df.empty:
-                atm_ce_info_local = fetch_atm_ce_quote(kite, nifty_opt_df, float(nifty_spot))
+            if (
+                nifty_spot is not None
+                and not pd.isna(nifty_spot)
+                and not nifty_opt_df.empty
+            ):
+                atm_ce_info_local = fetch_atm_ce_quote(
+                    kite, nifty_opt_df, float(nifty_spot)
+                )
                 atm_ce_info = atm_ce_info_local
 
-        layout_snapshot(df, atm_ce_info)
+                if atm_ce_info is not None:
+                    ob_info_local = fetch_orderbook_for_atm_ce(kite, atm_ce_info)
+                    ob_info = ob_info_local
+
+        layout_snapshot(df, atm_ce_info, ob_info)
 
     run_fetch_and_render()
 
