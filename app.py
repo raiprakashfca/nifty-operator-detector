@@ -32,7 +32,7 @@ def get_kite_client():
     try:
         api_key = st.secrets["kite"]["api_key"]
         access_token = st.secrets["kite"]["access_token"]
-    except Exception as e:
+    except Exception:
         st.error(
             "Kite API credentials not found in Streamlit secrets. "
             "Go to app settings → Secrets and add:\n\n"
@@ -60,12 +60,10 @@ def fetch_ltp_snapshot(kite: KiteConnect) -> pd.DataFrame:
     Returns a pandas DataFrame.
     """
     instruments = build_instrument_list()
-    # Example: ["NSE:RELIANCE", ..., "NSE:NIFTY 50"]
     ltp_data = kite.ltp(instruments)
 
     rows = []
     now = datetime.now(ZoneInfo("Asia/Kolkata"))
-
 
     for instrument, data in ltp_data.items():
         # instrument is like "NSE:RELIANCE"
@@ -76,10 +74,7 @@ def fetch_ltp_snapshot(kite: KiteConnect) -> pd.DataFrame:
         prev_close = ohlc.get("close")
 
         # Safely compute % change
-        if (
-            last_price is not None
-            and prev_close not in (None, 0)
-        ):
+        if last_price is not None and prev_close not in (None, 0):
             pct_change = ((last_price - prev_close) / prev_close) * 100.0
         else:
             pct_change = None
@@ -110,12 +105,115 @@ def fetch_ltp_snapshot(kite: KiteConnect) -> pd.DataFrame:
     return df
 
 
+# --------- SUPPRESSION LOGIC ---------
+def compute_suppression_stats(df: pd.DataFrame):
+    """
+    Compute basic operator-suppression style metrics:
+    - Nifty % change
+    - Average heavyweights % change
+    - Divergence (heavyweights - Nifty)
+    - A simple suppression label
+    """
+    if df is None or df.empty:
+        return None
+
+    nifty_rows = df[df["Symbol"] == NIFTY_INDEX_SYMBOL]
+    if nifty_rows.empty:
+        return None
+
+    nifty_row = nifty_rows.iloc[0]
+    heavy_df = df[df["Symbol"] != NIFTY_INDEX_SYMBOL]
+
+    if heavy_df.empty:
+        return None
+
+    nifty_change = nifty_row["% Change"]
+    avg_heavy_change = heavy_df["% Change"].mean()
+
+    if pd.isna(nifty_change) or pd.isna(avg_heavy_change):
+        return None
+
+    # Divergence in percentage points:
+    # Negative divergence => heavyweights falling more than the index.
+    divergence = avg_heavy_change - nifty_change
+
+    # Very rough "pressure" in points (just for intuition):
+    # If heavyweights were moving with Nifty, index move would be closer to avg_heavy_change.
+    # Here we only show divergence in % terms & classify.
+    suppression_label = "NORMAL"
+    suppression_explanation = "No clear sign of heavy index suppression."
+
+    # Heuristic: we look for situations where Nifty is modestly down but
+    # heavyweights are noticeably weaker.
+    abs_div = abs(divergence)
+
+    if (
+        nifty_change <= -0.20   # Nifty at least mildly down
+        and nifty_change >= -1.50  # not a full crash, more like intraday dip
+        and divergence <= -0.30  # heavyweights underperforming Nifty by > 0.30%
+    ):
+        if abs_div >= 1.0:
+            suppression_label = "HIGH"
+            suppression_explanation = (
+                "Heavyweights are significantly weaker than NIFTY – "
+                "possible deliberate suppression while the index looks 'orderly'."
+            )
+        else:
+            suppression_label = "MILD"
+            suppression_explanation = (
+                "Heavyweights are weaker than NIFTY – some index suppression pressure visible."
+            )
+
+    return {
+        "nifty_change": float(nifty_change),
+        "avg_heavy_change": float(avg_heavy_change),
+        "divergence": float(divergence),
+        "label": suppression_label,
+        "explanation": suppression_explanation,
+    }
+
+
+# --------- LAYOUT HELPERS ---------
 def layout_header():
-    st.title("NIFTY Operator Detector – Phase 1")
+    st.title("NIFTY Operator Detector – Phase 2")
     st.caption(
-        "Live snapshot of NIFTY 50 and top heavyweights – this is the data spine "
-        "for spotting fake suppression and cheap-call zones."
+        "Live snapshot of NIFTY 50 and top heavyweights, plus a basic "
+        "operator-suppression monitor. Next phases will add ATM option & order-book checks."
     )
+
+
+def layout_suppression_section(df: pd.DataFrame):
+    stats = compute_suppression_stats(df)
+    st.subheader("🧲 Operator Suppression Monitor")
+
+    if stats is None:
+        st.info("Not enough clean data yet to compute suppression metrics.")
+        return
+
+    nifty_chg = stats["nifty_change"]
+    heavy_chg = stats["avg_heavy_change"]
+    divergence = stats["divergence"]
+    label = stats["label"]
+    explanation = stats["explanation"]
+
+    # Safe formatting
+    def fmt_pct(x):
+        try:
+            return f"{x:.2f}%"
+        except Exception:
+            return "-"
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("NIFTY % Change", fmt_pct(nifty_chg))
+    col2.metric("Avg Heavyweights % Change", fmt_pct(heavy_chg))
+    col3.metric("Divergence (Heavy - NIFTY)", fmt_pct(divergence))
+
+    if label == "HIGH":
+        st.error(f"Suppression: {label} – {explanation}")
+    elif label == "MILD":
+        st.warning(f"Suppression: {label} – {explanation}")
+    else:
+        st.success(f"Suppression: {label} – {explanation}")
 
 
 def layout_snapshot(df: pd.DataFrame):
@@ -142,20 +240,26 @@ def layout_snapshot(df: pd.DataFrame):
     if pd.isna(nifty_ltp):
         nifty_ltp_display = "-"
     else:
-        nifty_ltp_display = f"{nifty_ltp:.2f}"
+        nifty_ltp_display = f"{float(nifty_ltp):.2f}"
 
     if pd.isna(nifty_change):
         nifty_change_display = "-"
     else:
-        nifty_change_display = f"{nifty_change:.2f}%"
+        nifty_change_display = f"{float(nifty_change):.2f}%"
 
-    ts_display = nifty_ts.strftime("%H:%M:%S") if isinstance(nifty_ts, datetime) else str(nifty_ts)
+    if isinstance(nifty_ts, datetime):
+        ts_display = nifty_ts.astimezone(ZoneInfo("Asia/Kolkata")).strftime("%H:%M:%S")
+    else:
+        ts_display = str(nifty_ts)
 
     st.subheader("📈 NIFTY Snapshot")
     col1, col2, col3 = st.columns(3)
     col1.metric("NIFTY LTP", nifty_ltp_display)
     col2.metric("NIFTY % Change", nifty_change_display)
-    col3.write(f"Timestamp: {ts_display}")
+    col3.write(f"Timestamp (IST): {ts_display}")
+
+    # Suppression section right under Nifty snapshot
+    layout_suppression_section(df)
 
     st.subheader("🏋️ Heavyweights Snapshot")
     _render_heavyweights_table(df)
@@ -192,15 +296,16 @@ def _render_heavyweights_table(df: pd.DataFrame):
     )
 
 
+# --------- MAIN APP ---------
 def main():
     layout_header()
 
     with st.sidebar:
         st.header("Settings")
-        refresh_seconds = st.slider("Auto-refresh every (seconds)", 5, 60, 15)
+        _ = st.slider("Auto-refresh every (seconds)", 5, 60, 15)
         st.caption(
-            "For Phase 1 we only show LTP & % change. "
-            "In the next phases we'll add operator-pressure signals here."
+            "For now, refresh manually with the rerun button or browser reload.\n"
+            "Phase 3 will add ATM option checks; Phase 4 will add order-book signals."
         )
 
     kite = get_kite_client()
@@ -217,10 +322,7 @@ def main():
 
     st.info(
         "Hit the **R** key (browser refresh) or click the rerun button in the top-right "
-        "to refresh based on your selected interval."
-    )
-    st.caption(
-        "Later we'll replace this with a smarter auto-refresh and signal engine."
+        "to refresh the snapshot."
     )
 
 
