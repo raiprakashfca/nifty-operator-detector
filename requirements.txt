@@ -2,3 +2,4 @@ streamlit
 kiteconnect
 pandas
 python-dateutil
+streamlit_autorefresh
