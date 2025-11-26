@@ -1,4 +1,5 @@
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 from kiteconnect import KiteConnect
 import pandas as pd
 from datetime import datetime, date
@@ -481,7 +482,7 @@ def layout_atm_ce_section(atm_ce_info, ob_info, nifty_change):
     colb1.metric("Total Bid Qty (top 5)", f"{int(total_bid)}")
     colb2.metric("Total Ask Qty (top 5)", f"{int(total_ask)}")
     colb3.metric(
-        "Bid/Aks Qty Ratio",
+        "Bid/Ask Qty Ratio",
         "-" if ratio in (0.0, float("inf")) else f"{ratio:.2f}",
     )
     colb4.metric("Top Bid / Ask", f"{fmt_price(top_bid)} / {fmt_price(top_ask)}")
@@ -583,11 +584,14 @@ def main():
 
     with st.sidebar:
         st.header("Settings")
-        _ = st.slider("Auto-refresh every (seconds)", 5, 60, 15)
+        refresh_seconds = st.slider("Auto-refresh every (seconds)", 5, 60, 15, step=5)
         st.caption(
-            "For now, refresh manually with the rerun button or browser reload.\n"
-            "Use this as a discretionary tool, not a blind auto-trader."
+            "Lower values = more live, but more API calls.\n"
+            "10–20 seconds is a good balance with Kite limits."
         )
+
+    # 🔄 Real auto-refresh: this reruns the script every N seconds
+    st_autorefresh(interval=refresh_seconds * 1000, key="auto_refresh")
 
     kite = get_kite_client()
     nifty_opt_df = get_nifty_option_instruments(kite)
@@ -623,11 +627,6 @@ def main():
         layout_snapshot(df, atm_ce_info, ob_info)
 
     run_fetch_and_render()
-
-    st.info(
-        "Hit the **R** key (browser refresh) or click the rerun button in the top-right "
-        "to refresh the snapshot."
-    )
 
 
 if __name__ == "__main__":
