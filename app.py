@@ -104,6 +104,41 @@ def build_instrument_list():
     return instruments
 
 
+def ensure_nifty_change(df: pd.DataFrame, kite: KiteConnect) -> pd.DataFrame:
+    """
+    If NIFTY % Change is missing, try a fallback quote() call to compute it.
+    """
+    if df is None or df.empty:
+        return df
+
+    mask = df["Symbol"].eq(NIFTY_INDEX_SYMBOL)
+    if not mask.any():
+        return df
+
+    idx = df[mask].index[0]
+    pct = df.at[idx, "% Change"]
+    prev_close = df.at[idx, "Prev Close"]
+    ltp = df.at[idx, "LTP"]
+
+    if pd.isna(pct) or pct is None:
+        try:
+            q = kite.quote([f"NSE:{NIFTY_INDEX_SYMBOL}"])
+            data = list(q.values())[0]
+            last_price = data.get("last_price")
+            ohlc = data.get("ohlc", {}) or {}
+            close = ohlc.get("close")
+
+            if last_price is not None and close not in (None, 0):
+                df.at[idx, "LTP"] = last_price
+                df.at[idx, "Prev Close"] = close
+                df.at[idx, "% Change"] = ((last_price - close) / close) * 100.0
+        except Exception as e:
+            # Don't spam, just a soft warning
+            st.warning(f"Fallback NIFTY % change fetch failed: {e}")
+
+    return df
+
+
 def fetch_ltp_snapshot(kite: KiteConnect) -> pd.DataFrame:
     """
     Fetch LTP + previous close for NIFTY and heavyweights.
@@ -151,6 +186,9 @@ def fetch_ltp_snapshot(kite: KiteConnect) -> pd.DataFrame:
 
     if df.empty:
         return df
+
+    # Fallback: make sure NIFTY % change is filled if possible
+    df = ensure_nifty_change(df, kite)
 
     # Flag NIFTY row and sort it on top, then biggest movers
     df["is_nifty"] = df["Symbol"].eq(NIFTY_INDEX_SYMBOL)
@@ -519,10 +557,6 @@ def layout_atm_ce_section(atm_ce_info, ob_info, nifty_change):
         st.info("ATM NIFTY CE data not available yet.")
         return
 
-    if nifty_change is None or pd.isna(nifty_change):
-        st.info("NIFTY % change unavailable; cannot compute CE divergence.")
-        return
-
     ce_chg = atm_ce_info["pct_change"]
     ce_ltp = atm_ce_info["ltp"]
     ce_symbol = atm_ce_info["tradingsymbol"]
@@ -554,7 +588,10 @@ def layout_atm_ce_section(atm_ce_info, ob_info, nifty_change):
         )
         st.warning(f"Call Divergence: MILD – {note}")
     else:
-        note = "No special CE divergence detected."
+        if nifty_change is None or pd.isna(nifty_change):
+            note = "NIFTY % change unavailable – divergence cannot be evaluated reliably."
+        else:
+            note = "No special CE divergence detected."
         st.info(f"Call Divergence: NEUTRAL – {note}")
 
     st.markdown("**Order Book Footprint (ATM CE)**")
@@ -595,10 +632,6 @@ def layout_atm_pe_section(atm_pe_info, ob_info, nifty_change):
         st.info("ATM NIFTY PE data not available yet.")
         return
 
-    if nifty_change is None or pd.isna(nifty_change):
-        st.info("NIFTY % change unavailable; cannot compute PE divergence.")
-        return
-
     pe_chg = atm_pe_info["pct_change"]
     pe_ltp = atm_pe_info["ltp"]
     pe_symbol = atm_pe_info["tradingsymbol"]
@@ -630,7 +663,10 @@ def layout_atm_pe_section(atm_pe_info, ob_info, nifty_change):
         )
         st.warning(f"Put Divergence: MILD – {note}")
     else:
-        note = "No special PE divergence detected."
+        if nifty_change is None or pd.isna(nifty_change):
+            note = "NIFTY % change unavailable – divergence cannot be evaluated reliably."
+        else:
+            note = "No special PE divergence detected."
         st.info(f"Put Divergence: NEUTRAL – {note}")
 
     st.markdown("**Order Book Footprint (ATM PE)**")
