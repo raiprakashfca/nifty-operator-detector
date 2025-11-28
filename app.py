@@ -263,11 +263,16 @@ def compute_suppression_stats(df: pd.DataFrame):
     }
 
 
-# --------- ATM OPTION FINDERS & QUOTES ---------
-def find_atm_option_instrument(
+# --------- ATM→ITM OPTION FINDERS & QUOTES ---------
+def find_itm_near_atm_instrument(
     nifty_opt_df: pd.DataFrame, nifty_spot: float, option_type: str
 ):
-    """Generic ATM finder for CE/PE."""
+    """
+    Find ITM closest to ATM:
+      - CE: strike <= ATM, nearest below
+      - PE: strike >= ATM, nearest above
+    If that subset is empty, fall back to nearest strike overall.
+    """
     if nifty_opt_df is None or nifty_opt_df.empty:
         return None
     if nifty_spot is None or pd.isna(nifty_spot):
@@ -287,16 +292,34 @@ def find_atm_option_instrument(
     if df.empty:
         return None
 
-    df["strike_diff"] = (df["strike"] - atm_strike).abs()
-    df = df.sort_values(["strike_diff", "expiry"])
-    return df.iloc[0]
+    # ITM filter
+    if option_type == "CE":
+        df_itm = df[df["strike"] <= atm_strike].copy()
+    else:  # PE
+        df_itm = df[df["strike"] >= atm_strike].copy()
+
+    if not df_itm.empty:
+        df_itm["strike_diff"] = (df_itm["strike"] - atm_strike).abs()
+        df_sel = df_itm
+    else:
+        # fallback: nearest strike overall
+        df["strike_diff"] = (df["strike"] - atm_strike).abs()
+        df_sel = df
+
+    df_sel = df_sel.sort_values(["strike_diff", "expiry"])
+    return df_sel.iloc[0]
 
 
-def fetch_atm_option_quote(
+def fetch_itm_option_quote(
     kite: KiteConnect, nifty_opt_df: pd.DataFrame, nifty_spot: float, option_type: str
 ):
-    """Find ATM option (CE or PE) and fetch LTP + % change."""
-    row = find_atm_option_instrument(nifty_opt_df, nifty_spot, option_type)
+    """
+    Find ITM-near-ATM option (CE or PE) and fetch:
+      - LTP, % change, prev close
+      - cumulative volume
+    Uses kite.quote() so we also get volume.
+    """
+    row = find_itm_near_atm_instrument(nifty_opt_df, nifty_spot, option_type)
     if row is None:
         return None
 
@@ -306,9 +329,9 @@ def fetch_atm_option_quote(
     instrument = f"NFO:{tradingsymbol}"
 
     try:
-        q = kite.ltp([instrument])
+        q = kite.quote([instrument])
     except Exception as e:
-        st.error(f"Error fetching ATM {option_type} LTP from Kite: {e}")
+        st.error(f"Error fetching ITM {option_type} quote from Kite: {e}")
         return None
 
     if not q:
@@ -318,6 +341,11 @@ def fetch_atm_option_quote(
     last_price = data.get("last_price")
     ohlc = data.get("ohlc", {}) or {}
     prev_close = ohlc.get("close")
+
+    # volume key is 'volume' in most Kite responses; also try 'volume_traded'
+    volume_total = data.get("volume_traded")
+    if volume_total is None:
+        volume_total = data.get("volume")
 
     if last_price is not None and prev_close not in (None, 0):
         pct_change = ((last_price - prev_close) / prev_close) * 100.0
@@ -333,6 +361,7 @@ def fetch_atm_option_quote(
         "pct_change": pct_change,
         "instrument": instrument,
         "option_type": option_type.upper(),
+        "volume_total": volume_total,
     }
 
 
@@ -411,6 +440,15 @@ def _fmt_pct(x):
         return "-"
 
 
+def _fmt_int(x):
+    if x is None or pd.isna(x):
+        return "-"
+    try:
+        return f"{int(x)}"
+    except Exception:
+        return "-"
+
+
 # --------- DIVERGENCE CLASSIFIERS ---------
 def classify_ce_divergence(ce_chg, nifty_change) -> str:
     """Return 'strong', 'mild', or 'neutral' for CE divergence."""
@@ -448,11 +486,53 @@ def classify_pe_divergence(pe_chg, nifty_change) -> str:
     return "neutral"
 
 
+# --------- RECENT VOLUME (15s ESTIMATE) ---------
+def compute_recent_volume_15s(instrument: str, current_volume):
+    """
+    Approximate volume in last 15 seconds using cumulative volume deltas.
+
+    - Stores (volume, timestamp) per instrument in st.session_state.
+    - On each refresh, compute delta + elapsed seconds.
+    - Scale delta to a 15-second equivalent: delta * (15 / elapsed).
+    """
+    now = datetime.now(ZoneInfo("Asia/Kolkata"))
+
+    if current_volume is None or pd.isna(current_volume):
+        # Store state but we can't compute a delta yet
+        st.session_state[f"vol_state_{instrument}"] = (None, now)
+        return None
+
+    key = f"vol_state_{instrument}"
+    last = st.session_state.get(key)
+
+    if last is None:
+        # First observation, store and return None
+        st.session_state[key] = (current_volume, now)
+        return None
+
+    last_vol, last_time = last
+    st.session_state[key] = (current_volume, now)
+
+    if last_vol is None or last_time is None:
+        return None
+
+    delta = current_volume - last_vol
+    if delta <= 0:
+        return None
+
+    elapsed = (now - last_time).total_seconds()
+    if elapsed <= 0:
+        return None
+
+    est_15s = delta * (15.0 / elapsed)
+    return max(est_15s, 0.0)
+
+
 # --------- LAYOUT HELPERS ---------
 def layout_header():
     st.title("NIFTY Operator Detector – Burst Mode")
     st.caption(
-        "Index vs heavyweights + ATM CE/PE + order book.\n"
+        "Index vs heavyweights + ITM-near-ATM CE/PE + order book + est. 15s volume.\n"
         "CE and PE visible together. Burst Mode speeds up refresh on strong footprints."
     )
 
@@ -493,43 +573,51 @@ def layout_suppression_section(df: pd.DataFrame):
         st.info(f"Inflation: NORMAL – {infl_expl}")
 
 
-def layout_atm_ce_section(atm_ce_info, ob_info, nifty_change):
-    st.subheader("🎯 ATM CE – Dip Buying")
+def layout_itm_ce_section(itm_ce_info, ob_info, nifty_change):
+    st.subheader("🎯 ITM-near-ATM CE – Dip Buying")
 
-    if atm_ce_info is None:
-        st.info("ATM NIFTY CE not available.")
+    if itm_ce_info is None:
+        st.info("ITM NIFTY CE not available.")
         return
 
-    ce_chg = atm_ce_info["pct_change"]
-    ce_ltp = atm_ce_info["ltp"]
-    ce_symbol = atm_ce_info["tradingsymbol"]
-    strike = atm_ce_info["strike"]
-    expiry = atm_ce_info["expiry"]
+    ce_chg = itm_ce_info["pct_change"]
+    ce_ltp = itm_ce_info["ltp"]
+    ce_symbol = itm_ce_info["tradingsymbol"]
+    strike = itm_ce_info["strike"]
+    expiry = itm_ce_info["expiry"]
+    volume_total = itm_ce_info.get("volume_total")
+    instrument = itm_ce_info["instrument"]
+
+    est_vol_15s = compute_recent_volume_15s(instrument, volume_total)
 
     col1, col2 = st.columns(2)
     with col1:
-        st.metric("ATM CE", ce_symbol)
+        st.metric("ITM CE", ce_symbol)
         st.metric("Strike", f"{int(strike)}")
     with col2:
         st.metric("Expiry", str(expiry))
         st.metric("CE LTP", _fmt_price(ce_ltp))
 
-    col3, col4 = st.columns(2)
+    col3, col4, col5 = st.columns(3)
     col3.metric("CE %", _fmt_pct(ce_chg))
     col4.metric("NIFTY %", _fmt_pct(nifty_change))
+    col5.metric(
+        "Est Vol (15s)",
+        "-" if est_vol_15s is None else _fmt_int(est_vol_15s),
+    )
 
     level = classify_ce_divergence(ce_chg, nifty_change)
 
     if level == "strong":
-        msg = "NIFTY weak, CE flat/green – strong call accumulation risk."
+        msg = "NIFTY weak, ITM CE flat/green – strong call accumulation risk."
         st.error(f"Divergence: STRONG – {msg}")
     elif level == "mild":
-        msg = "NIFTY weak, CE relatively strong – mild call buying."
+        msg = "NIFTY weak, ITM CE relatively strong – mild call buying."
         st.warning(f"Divergence: MILD – {msg}")
     else:
         st.info("Divergence: NEUTRAL – no special CE signal.")
 
-    st.markdown("**Order Book (CE)**")
+    st.markdown("**Order Book (ITM CE)**")
 
     if ob_info is None:
         st.info("Order book for CE not available.")
@@ -544,8 +632,8 @@ def layout_atm_ce_section(atm_ce_info, ob_info, nifty_change):
     top_ask = ob_info["top_ask_price"]
 
     colb1, colb2, colb3, colb4 = st.columns(4)
-    colb1.metric("Bid Qty (top 5)", f"{int(total_bid)}")
-    colb2.metric("Ask Qty (top 5)", f"{int(total_ask)}")
+    colb1.metric("Bid Qty (top 5)", _fmt_int(total_bid))
+    colb2.metric("Ask Qty (top 5)", _fmt_int(total_ask))
     colb3.metric(
         "Bid/Ask Qty",
         "-" if ratio in (0.0, float("inf")) else f"{ratio:.2f}",
@@ -560,43 +648,51 @@ def layout_atm_ce_section(atm_ce_info, ob_info, nifty_change):
         st.info(f"Footprint: NONE – {desc}")
 
 
-def layout_atm_pe_section(atm_pe_info, ob_info, nifty_change):
-    st.subheader("🩸 ATM PE – Ramp & Dump")
+def layout_itm_pe_section(itm_pe_info, ob_info, nifty_change):
+    st.subheader("🩸 ITM-near-ATM PE – Ramp & Dump")
 
-    if atm_pe_info is None:
-        st.info("ATM NIFTY PE not available.")
+    if itm_pe_info is None:
+        st.info("ITM NIFTY PE not available.")
         return
 
-    pe_chg = atm_pe_info["pct_change"]
-    pe_ltp = atm_pe_info["ltp"]
-    pe_symbol = atm_pe_info["tradingsymbol"]
-    strike = atm_pe_info["strike"]
-    expiry = atm_pe_info["expiry"]
+    pe_chg = itm_pe_info["pct_change"]
+    pe_ltp = itm_pe_info["ltp"]
+    pe_symbol = itm_pe_info["tradingsymbol"]
+    strike = itm_pe_info["strike"]
+    expiry = itm_pe_info["expiry"]
+    volume_total = itm_pe_info.get("volume_total")
+    instrument = itm_pe_info["instrument"]
+
+    est_vol_15s = compute_recent_volume_15s(instrument, volume_total)
 
     col1, col2 = st.columns(2)
     with col1:
-        st.metric("ATM PE", pe_symbol)
+        st.metric("ITM PE", pe_symbol)
         st.metric("Strike", f"{int(strike)}")
     with col2:
         st.metric("Expiry", str(expiry))
         st.metric("PE LTP", _fmt_price(pe_ltp))
 
-    col3, col4 = st.columns(2)
+    col3, col4, col5 = st.columns(3)
     col3.metric("PE %", _fmt_pct(pe_chg))
     col4.metric("NIFTY %", _fmt_pct(nifty_change))
+    col5.metric(
+        "Est Vol (15s)",
+        "-" if est_vol_15s is None else _fmt_int(est_vol_15s),
+    )
 
     level = classify_pe_divergence(pe_chg, nifty_change)
 
     if level == "strong":
-        msg = "NIFTY strong, PE flat/green – strong put accumulation risk."
+        msg = "NIFTY strong, ITM PE flat/green – strong put accumulation risk."
         st.error(f"Divergence: STRONG – {msg}")
     elif level == "mild":
-        msg = "NIFTY strong, PE not collapsing – mild put buying/hedging."
+        msg = "NIFTY strong, ITM PE not collapsing – mild put buying/hedging."
         st.warning(f"Divergence: MILD – {msg}")
     else:
         st.info("Divergence: NEUTRAL – no special PE signal.")
 
-    st.markdown("**Order Book (PE)**")
+    st.markdown("**Order Book (ITM PE)**")
 
     if ob_info is None:
         st.info("Order book for PE not available.")
@@ -611,8 +707,8 @@ def layout_atm_pe_section(atm_pe_info, ob_info, nifty_change):
     top_ask = ob_info["top_ask_price"]
 
     colb1, colb2, colb3, colb4 = st.columns(4)
-    colb1.metric("Bid Qty (top 5)", f"{int(total_bid)}")
-    colb2.metric("Ask Qty (top 5)", f"{int(total_ask)}")
+    colb1.metric("Bid Qty (top 5)", _fmt_int(total_bid))
+    colb2.metric("Ask Qty (top 5)", _fmt_int(total_ask))
     colb3.metric(
         "Bid/Ask Qty",
         "-" if ratio in (0.0, float("inf")) else f"{ratio:.2f}",
@@ -627,7 +723,7 @@ def layout_atm_pe_section(atm_pe_info, ob_info, nifty_change):
         st.info(f"Footprint: NONE – {desc}")
 
 
-def layout_snapshot(df: pd.DataFrame, atm_ce_info, ob_ce_info, atm_pe_info, ob_pe_info):
+def layout_snapshot(df: pd.DataFrame, itm_ce_info, ob_ce_info, itm_pe_info, ob_pe_info):
     if df is None or df.empty:
         st.warning("No data returned from Kite.")
         return
@@ -659,12 +755,12 @@ def layout_snapshot(df: pd.DataFrame, atm_ce_info, ob_ce_info, atm_pe_info, ob_p
 
     layout_suppression_section(df)
 
-    st.subheader("🎯 Options Operator Footprint – ATM CE & PE")
+    st.subheader("🎯 Options Operator Footprint – ITM CE & PE")
     col_ce, col_pe = st.columns(2)
     with col_ce:
-        layout_atm_ce_section(atm_ce_info, ob_ce_info, nifty_change)
+        layout_itm_ce_section(itm_ce_info, ob_ce_info, nifty_change)
     with col_pe:
-        layout_atm_pe_section(atm_pe_info, ob_pe_info, nifty_change)
+        layout_itm_pe_section(itm_pe_info, ob_pe_info, nifty_change)
 
     st.subheader("🏋️ Heavyweights")
     _render_heavyweights_table(df)
@@ -687,9 +783,9 @@ def _render_heavyweights_table(df: pd.DataFrame):
 def detect_strong_signal(
     df: pd.DataFrame,
     stats: dict | None,
-    atm_ce_info: dict | None,
+    itm_ce_info: dict | None,
     ob_ce_info: dict | None,
-    atm_pe_info: dict | None,
+    itm_pe_info: dict | None,
     ob_pe_info: dict | None,
 ) -> bool:
     """
@@ -713,14 +809,14 @@ def detect_strong_signal(
 
     nifty_change = nifty_rows.iloc[0]["% Change"]
 
-    if atm_ce_info is not None:
-        ce_level = classify_ce_divergence(atm_ce_info.get("pct_change"), nifty_change)
+    if itm_ce_info is not None:
+        ce_level = classify_ce_divergence(itm_ce_info.get("pct_change"), nifty_change)
         ce_fp = (ob_ce_info or {}).get("footprint", "NONE")
         if ce_level == "strong" and ce_fp in ("MILD", "STRONG"):
             strong = True
 
-    if atm_pe_info is not None:
-        pe_level = classify_pe_divergence(atm_pe_info.get("pct_change"), nifty_change)
+    if itm_pe_info is not None:
+        pe_level = classify_pe_divergence(itm_pe_info.get("pct_change"), nifty_change)
         pe_fp = (ob_pe_info or {}).get("footprint", "NONE")
         if pe_level == "strong" and pe_fp in ("MILD", "STRONG"):
             strong = True
@@ -753,31 +849,33 @@ def main():
 
         nifty_rows = df[df["Symbol"] == NIFTY_INDEX_SYMBOL]
 
-        atm_ce_info = None
-        atm_pe_info = None
+        itm_ce_info = None
+        itm_pe_info = None
         ob_ce_info = None
         ob_pe_info = None
 
         if not nifty_rows.empty and not nifty_opt_df.empty:
             nifty_spot = nifty_rows.iloc[0]["LTP"]
             if nifty_spot is not None and not pd.isna(nifty_spot):
-                atm_ce_info = fetch_atm_option_quote(
+                # ITM CE
+                itm_ce_info = fetch_itm_option_quote(
                     kite, nifty_opt_df, float(nifty_spot), "CE"
                 )
-                if atm_ce_info is not None:
-                    ob_ce_info = fetch_orderbook_for_option(kite, atm_ce_info)
+                if itm_ce_info is not None:
+                    ob_ce_info = fetch_orderbook_for_option(kite, itm_ce_info)
 
-                atm_pe_info = fetch_atm_option_quote(
+                # ITM PE
+                itm_pe_info = fetch_itm_option_quote(
                     kite, nifty_opt_df, float(nifty_spot), "PE"
                 )
-                if atm_pe_info is not None:
-                    ob_pe_info = fetch_orderbook_for_option(kite, atm_pe_info)
+                if itm_pe_info is not None:
+                    ob_pe_info = fetch_orderbook_for_option(kite, itm_pe_info)
 
-        layout_snapshot(df, atm_ce_info, ob_ce_info, atm_pe_info, ob_pe_info)
+        layout_snapshot(df, itm_ce_info, ob_ce_info, itm_pe_info, ob_pe_info)
 
         stats = compute_suppression_stats(df)
         strong_signal = detect_strong_signal(
-            df, stats, atm_ce_info, ob_ce_info, atm_pe_info, ob_pe_info
+            df, stats, itm_ce_info, ob_ce_info, itm_pe_info, ob_pe_info
         )
         return strong_signal
 
