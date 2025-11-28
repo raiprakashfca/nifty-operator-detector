@@ -86,7 +86,8 @@ HEAVYWEIGHT_SYMBOLS = [
     "HINDUNILVR",
 ]
 
-NIFTY_INDEX_SYMBOL = "NIFTY 50"  # Kite uses "NSE:NIFTY 50" as instrument
+NIFTY_INDEX_SYMBOL = "NIFTY 50"   # NSE index
+SENSEX_INDEX_SYMBOL = "SENSEX"    # BSE index
 
 
 # --------- KITE CLIENT HELPERS ---------
@@ -143,6 +144,7 @@ def build_instrument_list():
     """Build the list of instruments to query via ohlc()."""
     instruments = [f"NSE:{sym}" for sym in HEAVYWEIGHT_SYMBOLS]
     instruments.append(f"NSE:{NIFTY_INDEX_SYMBOL}")
+    instruments.append(f"BSE:{SENSEX_INDEX_SYMBOL}")  # add Sensex index
     return instruments
 
 
@@ -181,8 +183,7 @@ def ensure_nifty_change(df: pd.DataFrame, kite: KiteConnect) -> pd.DataFrame:
 
 def fetch_ltp_snapshot(kite: KiteConnect) -> pd.DataFrame:
     """
-    Fetch LTP + previous close for NIFTY and heavyweights using kite.ohlc().
-    This fixes missing Prev Close / % Change issues.
+    Fetch LTP + previous close for NIFTY, SENSEX and heavyweights using kite.ohlc().
     """
     instruments = build_instrument_list()
 
@@ -198,9 +199,9 @@ def fetch_ltp_snapshot(kite: KiteConnect) -> pd.DataFrame:
     for instrument in instruments:
         data = ohlc_data.get(instrument, {}) or {}
         try:
-            _, symbol = instrument.split(":", 1)
+            exch, symbol = instrument.split(":", 1)
         except ValueError:
-            symbol = instrument
+            exch, symbol = None, instrument
 
         last_price = data.get("last_price")
         ohlc = data.get("ohlc", {}) or {}
@@ -213,6 +214,7 @@ def fetch_ltp_snapshot(kite: KiteConnect) -> pd.DataFrame:
 
         rows.append(
             {
+                "Exchange": exch,
                 "Symbol": symbol,
                 "LTP": last_price,
                 "Prev Close": prev_close,
@@ -227,6 +229,7 @@ def fetch_ltp_snapshot(kite: KiteConnect) -> pd.DataFrame:
 
     df = ensure_nifty_change(df, kite)
 
+    # For sorting, keep NIFTY on top; others follow by % change
     df["is_nifty"] = df["Symbol"].eq(NIFTY_INDEX_SYMBOL)
     df = df.sort_values(
         by=["is_nifty", "% Change"],
@@ -237,12 +240,12 @@ def fetch_ltp_snapshot(kite: KiteConnect) -> pd.DataFrame:
     return df
 
 
-# --------- SUPPRESSION / INFLATION LOGIC ---------
+# --------- SUPPRESSION / INFLATION LOGIC (NIFTY-based) ---------
 def compute_suppression_stats(df: pd.DataFrame):
     """
-    Compute:
+    Compute (NIFTY-based):
       - Nifty % change
-      - Avg heavyweights % change
+      - Avg heavyweights % change (excludes both NIFTY & SENSEX)
       - Divergence (heavy - Nifty)
       - Suppression label
       - Inflation label
@@ -255,8 +258,9 @@ def compute_suppression_stats(df: pd.DataFrame):
         return None
 
     nifty_row = nifty_rows.iloc[0]
-    heavy_df = df[df["Symbol"] != NIFTY_INDEX_SYMBOL]
 
+    # heavyweights: everything except the indices
+    heavy_df = df[~df["Symbol"].isin([NIFTY_INDEX_SYMBOL, SENSEX_INDEX_SYMBOL])]
     if heavy_df.empty:
         return None
 
@@ -603,7 +607,7 @@ def compute_recent_volume_15s(instrument: str, current_volume):
 def layout_header():
     st.title("NIFTY Operator Detector – Burst Mode + Audio")
     st.caption(
-        "Index vs heavyweights + ≥100-pt ITM CE/PE + LTP/LTQ + order book + est. 15s volume.\n"
+        "NIFTY vs heavyweights (NSE) + SENSEX snapshot (BSE) + ≥100-pt ITM CE/PE + LTP/LTQ + order book + est. 15s volume.\n"
         "Audio alert on HIGH divergence. CE and PE visible together. "
         "Burst Mode speeds up refresh on strong footprints."
     )
@@ -611,7 +615,7 @@ def layout_header():
 
 def layout_suppression_section(df: pd.DataFrame):
     stats = compute_suppression_stats(df)
-    st.subheader("🧲 Heavyweights vs Index")
+    st.subheader("🧲 NIFTY vs Heavyweights")
 
     if stats is None:
         st.info("Not enough clean data yet for suppression/inflation.")
@@ -825,7 +829,7 @@ def layout_snapshot(df: pd.DataFrame, itm_ce_info, ob_ce_info, itm_pe_info, ob_p
 
     nifty_rows = df[df["Symbol"] == NIFTY_INDEX_SYMBOL]
     if nifty_rows.empty:
-        st.warning("NIFTY row missing. Showing only heavyweights.")
+        st.warning("NIFTY row missing. Showing only heavyweights + SENSEX.")
         _render_heavyweights_table(df)
         return
 
@@ -842,22 +846,41 @@ def layout_snapshot(df: pd.DataFrame, itm_ce_info, ob_ce_info, itm_pe_info, ob_p
     else:
         ts_display = str(nifty_ts)
 
-    st.subheader("📈 NIFTY Snapshot")
+    st.subheader("📈 Index Snapshot")
     col1, col2, col3 = st.columns(3)
     col1.metric("NIFTY LTP", nifty_ltp_display)
     col2.metric("NIFTY %", nifty_change_display)
     col3.write(f"Timestamp (IST): {ts_display}")
 
+    # SENSEX panel (if available)
+    sensex_rows = df[df["Symbol"] == SENSEX_INDEX_SYMBOL]
+    if not sensex_rows.empty:
+        srow = sensex_rows.iloc[0]
+        s_ltp = _fmt_price(srow["LTP"])
+        s_pct = _fmt_pct(srow["% Change"])
+        s_ts = srow["Timestamp"]
+        if isinstance(s_ts, datetime):
+            s_ts_disp = s_ts.astimezone(ZoneInfo("Asia/Kolkata")).strftime("%H:%M:%S")
+        else:
+            s_ts_disp = str(s_ts)
+
+        col_s1, col_s2, col_s3 = st.columns(3)
+        col_s1.metric("SENSEX LTP", s_ltp)
+        col_s2.metric("SENSEX %", s_pct)
+        col_s3.write(f"Timestamp (IST): {s_ts_disp}")
+    else:
+        st.info("SENSEX data not available from Kite for this snapshot.")
+
     layout_suppression_section(df)
 
-    st.subheader("🎯 Options Operator Footprint – Deep ITM CE & PE")
+    st.subheader("🎯 Options Operator Footprint – Deep ITM CE & PE (NIFTY)")
     col_ce, col_pe = st.columns(2)
     with col_ce:
         layout_itm_ce_section(itm_ce_info, ob_ce_info, nifty_change)
     with col_pe:
         layout_itm_pe_section(itm_pe_info, ob_pe_info, nifty_change)
 
-    st.subheader("🏋️ Heavyweights")
+    st.subheader("🏋️ Heavyweights & Indices Table")
     _render_heavyweights_table(df)
 
 
@@ -868,7 +891,7 @@ def _render_heavyweights_table(df: pd.DataFrame):
     display_df["% Change"] = display_df["% Change"].map(_fmt_pct)
 
     st.dataframe(
-        display_df[["Symbol", "LTP", "Prev Close", "% Change"]],
+        display_df[["Exchange", "Symbol", "LTP", "Prev Close", "% Change"]],
         use_container_width=True,
         hide_index=True,
     )
