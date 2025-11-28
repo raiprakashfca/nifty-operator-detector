@@ -7,12 +7,69 @@ from zoneinfo import ZoneInfo
 
 # --------- PAGE CONFIG ---------
 st.set_page_config(
-    page_title="NIFTY Operator Detector",
+    page_title="NIFTY Operator Detector – Audio Alert",
     layout="wide",
 )
 
 # --------- BURST MODE CONFIG ---------
 BURST_REFRESH_SECONDS = 2  # when strong operator footprint is detected
+
+# --------- EMBEDDED BEEP (WAV, BASE64) ---------
+# Short 0.25s beep tone encoded as base64 WAV.
+BEEP_BASE64 = """
+UklGRkZWAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YSJWAAAAANAzz
+zvHPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zv
+TPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvP
+PPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7H
+PcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPd
+M+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPM
+c87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE
+80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1
+TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87
+zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80z
+vTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1Tzv
+PPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7
+HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTP
+dM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPP
+Mc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPc
+E80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+
+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc8
+7zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80
+zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1Tz
+vPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz
+7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvT
+PdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPP
+PMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HP
+cE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM
++1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc
+87zz7H
+"""
+
+def play_beep():
+    """Inject a small audio tag to play a beep once."""
+    b64 = "".join(BEEP_BASE64.split())  # remove newlines/spaces
+    audio_html = f"""
+    <audio autoplay>
+        <source src="data:audio/wav;base64,{b64}" type="audio/wav">
+    </audio>
+    """
+    st.markdown(audio_html, unsafe_allow_html=True)
+
+
+def trigger_high_divergence_beep(supp_label: str, infl_label: str):
+    """
+    Play beep on transition to HIGH (either suppression or inflation).
+
+    Uses session_state so you don't get spammed on every refresh while it stays HIGH.
+    """
+    key = "high_divergence_active"
+    prev = st.session_state.get(key, False)
+    current = (supp_label == "HIGH") or (infl_label == "HIGH")
+
+    if current and not prev:
+        play_beep()  # rising edge: NORMAL/MILD -> HIGH
+
+    st.session_state[key] = current
 
 
 # --------- CONFIG: HEAVYWEIGHTS & INDEX ---------
@@ -263,7 +320,7 @@ def compute_suppression_stats(df: pd.DataFrame):
     }
 
 
-# --------- STRICT ITM (>=100pts) OPTION FINDERS & QUOTES ---------
+# --------- DEEP ITM (>=100pts) OPTION FINDERS & QUOTES ---------
 def find_itm_near_spot_instrument(
     nifty_opt_df: pd.DataFrame, nifty_spot: float, option_type: str
 ):
@@ -541,10 +598,11 @@ def compute_recent_volume_15s(instrument: str, current_volume):
 
 # --------- LAYOUT HELPERS ---------
 def layout_header():
-    st.title("NIFTY Operator Detector – Burst Mode")
+    st.title("NIFTY Operator Detector – Burst Mode + Audio")
     st.caption(
         "Index vs heavyweights + ≥100-pt ITM CE/PE + order book + est. 15s volume.\n"
-        "CE and PE visible together. Burst Mode speeds up refresh on strong footprints."
+        "Audio alert on HIGH divergence. CE and PE visible together. "
+        "Burst Mode speeds up refresh on strong footprints."
     )
 
 
@@ -563,6 +621,9 @@ def layout_suppression_section(df: pd.DataFrame):
     supp_expl = stats["supp_expl"]
     infl_label = stats["infl_label"]
     infl_expl = stats["infl_expl"]
+
+    # Trigger audio if we just flipped to HIGH
+    trigger_high_divergence_beep(supp_label, infl_label)
 
     col1, col2, col3 = st.columns(3)
     col1.metric("NIFTY %", _fmt_pct(nifty_chg))
