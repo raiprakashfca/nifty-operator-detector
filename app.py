@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 # --------- PAGE CONFIG ---------
 st.set_page_config(
-    page_title="NIFTY Operator Detector – Audio Alert",
+    page_title="NIFTY Operator Detector – Audio",
     layout="wide",
 )
 
@@ -387,7 +387,8 @@ def fetch_itm_option_quote(
     Find deep-ITM-near-spot option (CE or PE) and fetch:
       - LTP, % change, prev close
       - cumulative volume
-    Uses kite.quote() so we also get volume.
+      - last traded quantity (LTQ)
+    Uses kite.quote() so we also get volume and LTQ.
     """
     row = find_itm_near_spot_instrument(nifty_opt_df, nifty_spot, option_type)
     if row is None:
@@ -409,6 +410,7 @@ def fetch_itm_option_quote(
 
     data = list(q.values())[0]
     last_price = data.get("last_price")
+    last_qty = data.get("last_quantity")  # LTQ
     ohlc = data.get("ohlc", {}) or {}
     prev_close = ohlc.get("close")
 
@@ -427,6 +429,7 @@ def fetch_itm_option_quote(
         "strike": float(strike),
         "expiry": expiry,
         "ltp": last_price,
+        "last_quantity": last_qty,
         "prev_close": prev_close,
         "pct_change": pct_change,
         "instrument": instrument,
@@ -600,7 +603,7 @@ def compute_recent_volume_15s(instrument: str, current_volume):
 def layout_header():
     st.title("NIFTY Operator Detector – Burst Mode + Audio")
     st.caption(
-        "Index vs heavyweights + ≥100-pt ITM CE/PE + order book + est. 15s volume.\n"
+        "Index vs heavyweights + ≥100-pt ITM CE/PE + LTP/LTQ + order book + est. 15s volume.\n"
         "Audio alert on HIGH divergence. CE and PE visible together. "
         "Burst Mode speeds up refresh on strong footprints."
     )
@@ -654,6 +657,7 @@ def layout_itm_ce_section(itm_ce_info, ob_info, nifty_change):
 
     ce_chg = itm_ce_info["pct_change"]
     ce_ltp = itm_ce_info["ltp"]
+    ce_ltq = itm_ce_info.get("last_quantity")
     ce_symbol = itm_ce_info["tradingsymbol"]
     strike = itm_ce_info["strike"]
     expiry = itm_ce_info["expiry"]
@@ -668,7 +672,11 @@ def layout_itm_ce_section(itm_ce_info, ob_info, nifty_change):
         st.metric("Strike", f"{int(strike)}")
     with col2:
         st.metric("Expiry", str(expiry))
-        st.metric("CE LTP", _fmt_price(ce_ltp))
+
+    # LTP + LTQ row
+    col_ltp, col_ltq = st.columns(2)
+    col_ltp.metric("CE LTP", _fmt_price(ce_ltp))
+    col_ltq.metric("CE LTQ", _fmt_int(ce_ltq))
 
     col3, col4, col5 = st.columns(3)
     col3.metric("CE %", _fmt_pct(ce_chg))
@@ -734,6 +742,7 @@ def layout_itm_pe_section(itm_pe_info, ob_info, nifty_change):
 
     pe_chg = itm_pe_info["pct_change"]
     pe_ltp = itm_pe_info["ltp"]
+    pe_ltq = itm_pe_info.get("last_quantity")
     pe_symbol = itm_pe_info["tradingsymbol"]
     strike = itm_pe_info["strike"]
     expiry = itm_pe_info["expiry"]
@@ -748,7 +757,11 @@ def layout_itm_pe_section(itm_pe_info, ob_info, nifty_change):
         st.metric("Strike", f"{int(strike)}")
     with col2:
         st.metric("Expiry", str(expiry))
-        st.metric("PE LTP", _fmt_price(pe_ltp))
+
+    # LTP + LTQ row
+    col_ltp, col_ltq = st.columns(2)
+    col_ltp.metric("PE LTP", _fmt_price(pe_ltp))
+    col_ltq.metric("PE LTQ", _fmt_int(pe_ltq))
 
     col3, col4, col5 = st.columns(3)
     col3.metric("PE %", _fmt_pct(pe_chg))
