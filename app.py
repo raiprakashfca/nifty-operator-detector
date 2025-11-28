@@ -83,7 +83,7 @@ def get_nifty_option_instruments() -> pd.DataFrame:
 
 
 def build_instrument_list():
-    """Build the list of instruments to query via ltp()."""
+    """Build the list of instruments to query via ohlc()."""
     instruments = [f"NSE:{sym}" for sym in HEAVYWEIGHT_SYMBOLS]
     instruments.append(f"NSE:{NIFTY_INDEX_SYMBOL}")
     return instruments
@@ -124,20 +124,22 @@ def ensure_nifty_change(df: pd.DataFrame, kite: KiteConnect) -> pd.DataFrame:
 
 def fetch_ltp_snapshot(kite: KiteConnect) -> pd.DataFrame:
     """
-    Fetch LTP + previous close for NIFTY and heavyweights.
+    Fetch LTP + previous close for NIFTY and heavyweights using kite.ohlc().
+    This fixes missing Prev Close / % Change issues.
     """
     instruments = build_instrument_list()
 
     try:
-        ltp_data = kite.ltp(instruments)
+        ohlc_data = kite.ohlc(instruments)
     except Exception as e:
-        st.error(f"Error fetching LTP data from Kite: {e}")
+        st.error(f"Error fetching OHLC data from Kite: {e}")
         return pd.DataFrame()
 
     rows = []
     now = datetime.now(ZoneInfo("Asia/Kolkata"))
 
-    for instrument, data in ltp_data.items():
+    for instrument in instruments:
+        data = ohlc_data.get(instrument, {}) or {}
         try:
             _, symbol = instrument.split(":", 1)
         except ValueError:
@@ -746,7 +748,7 @@ def main():
     def run_fetch_and_render():
         df = fetch_ltp_snapshot(kite)
         if df.empty:
-            st.warning("No LTP data from Kite.")
+            st.warning("No LTP/OHLC data from Kite.")
             return False
 
         nifty_rows = df[df["Symbol"] == NIFTY_INDEX_SYMBOL]
