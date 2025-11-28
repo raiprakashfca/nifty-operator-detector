@@ -598,6 +598,115 @@ def compute_recent_volume_15s(instrument: str, current_volume):
     return max(est_15s, 0.0)
 
 
+# --------- HISTORY TRACKING ---------
+def update_history(
+    df: pd.DataFrame,
+    stats: dict | None,
+    itm_ce_info: dict | None,
+    ce_div_level: str | None,
+    ob_ce_info: dict | None,
+    itm_pe_info: dict | None,
+    pe_div_level: str | None,
+    ob_pe_info: dict | None,
+):
+    """
+    Store last ~20 refresh snapshots in st.session_state["operator_history"].
+    """
+    if df is None or df.empty:
+        return
+
+    nifty_rows = df[df["Symbol"] == NIFTY_INDEX_SYMBOL]
+    if nifty_rows.empty:
+        return
+
+    nifty_row = nifty_rows.iloc[0]
+    nifty_pct = nifty_row["% Change"]
+    ts = nifty_row["Timestamp"]
+
+    if isinstance(ts, datetime):
+        ts_str = ts.astimezone(ZoneInfo("Asia/Kolkata")).strftime("%H:%M:%S")
+    else:
+        ts_str = str(ts)
+
+    record = {
+        "Time": ts_str,
+        "NIFTY %": None if pd.isna(nifty_pct) else float(nifty_pct),
+        "Supp": stats.get("supp_label") if stats else None,
+        "Infl": stats.get("infl_label") if stats else None,
+    }
+
+    # CE side
+    if itm_ce_info is not None:
+        record["CE Strike"] = int(itm_ce_info["strike"])
+        ce_pct = itm_ce_info.get("pct_change")
+        record["CE %"] = None if ce_pct is None or pd.isna(ce_pct) else float(ce_pct)
+        record["CE Divergence"] = ce_div_level
+        record["CE Footprint"] = (ob_ce_info or {}).get("footprint")
+    else:
+        record["CE Strike"] = None
+        record["CE %"] = None
+        record["CE Divergence"] = None
+        record["CE Footprint"] = None
+
+    # PE side
+    if itm_pe_info is not None:
+        record["PE Strike"] = int(itm_pe_info["strike"])
+        pe_pct = itm_pe_info.get("pct_change")
+        record["PE %"] = None if pe_pct is None or pd.isna(pe_pct) else float(pe_pct)
+        record["PE Divergence"] = pe_div_level
+        record["PE Footprint"] = (ob_pe_info or {}).get("footprint")
+    else:
+        record["PE Strike"] = None
+        record["PE %"] = None
+        record["PE Divergence"] = None
+        record["PE Footprint"] = None
+
+    history = st.session_state.get("operator_history", [])
+    history.append(record)
+    history = history[-20:]  # keep last 20
+    st.session_state["operator_history"] = history
+
+
+def layout_history_section():
+    st.subheader("⏱ Last Few Refreshes (In-Memory)")
+    history = st.session_state.get("operator_history", [])
+
+    if not history:
+        st.info("History will build up as ticks come in.")
+        return
+
+    df_hist = pd.DataFrame(history)
+
+    # Pretty formatting for % columns
+    for col in ["NIFTY %", "CE %", "PE %"]:
+        if col in df_hist.columns:
+            df_hist[col] = df_hist[col].apply(
+                lambda x: "-" if x is None else f"{x:.2f}%"
+            )
+
+    st.dataframe(
+        df_hist[
+            [
+                "Time",
+                "NIFTY %",
+                "Supp",
+                "Infl",
+                "CE Strike",
+                "CE %",
+                "CE Divergence",
+                "CE Footprint",
+                "PE Strike",
+                "PE %",
+                "PE Divergence",
+                "PE Footprint",
+            ]
+        ],
+        hide_index=True,
+        use_container_width=True,
+    )
+    st.caption("This history resets if the app reloads or the session resets.")
+
+
 # --------- LAYOUT HELPERS ---------
 def layout_header():
     st.title("NIFTY Operator Detector – Burst Mode + Audio")
@@ -614,7 +723,7 @@ def layout_suppression_section(df: pd.DataFrame):
 
     if stats is None:
         st.info("Not enough clean data yet for suppression/inflation.")
-        return
+        return stats
 
     nifty_chg = stats["nifty_change"]
     heavy_chg = stats["avg_heavy_change"]
@@ -645,6 +754,8 @@ def layout_suppression_section(df: pd.DataFrame):
         st.warning(f"Inflation: MILD – {infl_expl}")
     else:
         st.info(f"Inflation: NORMAL – {infl_expl}")
+
+    return stats
 
 
 def layout_itm_ce_section(itm_ce_info, ob_info, nifty_change):
@@ -822,13 +933,13 @@ def layout_itm_pe_section(itm_pe_info, ob_info, nifty_change):
 def layout_snapshot(df: pd.DataFrame, itm_ce_info, ob_ce_info, itm_pe_info, ob_pe_info):
     if df is None or df.empty:
         st.warning("No data returned from Kite.")
-        return
+        return None  # for stats
 
     nifty_rows = df[df["Symbol"] == NIFTY_INDEX_SYMBOL]
     if nifty_rows.empty:
         st.warning("NIFTY row missing. Showing only heavyweights.")
         _render_heavyweights_table(df)
-        return
+        return None
 
     nifty_row = nifty_rows.iloc[0]
     nifty_ltp = nifty_row["LTP"]
@@ -849,7 +960,7 @@ def layout_snapshot(df: pd.DataFrame, itm_ce_info, ob_ce_info, itm_pe_info, ob_p
     col2.metric("NIFTY %", nifty_change_display)
     col3.write(f"Timestamp (IST): {ts_display}")
 
-    layout_suppression_section(df)
+    stats = layout_suppression_section(df)
 
     st.subheader("🎯 Options Operator Footprint – Deep ITM CE & PE")
     col_ce, col_pe = st.columns(2)
@@ -860,6 +971,8 @@ def layout_snapshot(df: pd.DataFrame, itm_ce_info, ob_ce_info, itm_pe_info, ob_p
 
     st.subheader("🏋️ Heavyweights")
     _render_heavyweights_table(df)
+
+    return stats
 
 
 def _render_heavyweights_table(df: pd.DataFrame):
@@ -949,9 +1062,12 @@ def main():
         itm_pe_info = None
         ob_ce_info = None
         ob_pe_info = None
+        ce_div_level = None
+        pe_div_level = None
 
         if not nifty_rows.empty and not nifty_opt_df.empty:
             nifty_spot = nifty_rows.iloc[0]["LTP"]
+            nifty_change = nifty_rows.iloc[0]["% Change"]
             if nifty_spot is not None and not pd.isna(nifty_spot):
                 # Deep ITM CE
                 itm_ce_info = fetch_itm_option_quote(
@@ -959,6 +1075,9 @@ def main():
                 )
                 if itm_ce_info is not None:
                     ob_ce_info = fetch_orderbook_for_option(kite, itm_ce_info)
+                    ce_div_level = classify_ce_divergence(
+                        itm_ce_info.get("pct_change"), nifty_change
+                    )
 
                 # Deep ITM PE
                 itm_pe_info = fetch_itm_option_quote(
@@ -966,10 +1085,28 @@ def main():
                 )
                 if itm_pe_info is not None:
                     ob_pe_info = fetch_orderbook_for_option(kite, itm_pe_info)
+                    pe_div_level = classify_pe_divergence(
+                        itm_pe_info.get("pct_change"), nifty_change
+                    )
 
-        layout_snapshot(df, itm_ce_info, ob_ce_info, itm_pe_info, ob_pe_info)
+        # Render main layout and get stats from there
+        stats = layout_snapshot(df, itm_ce_info, ob_ce_info, itm_pe_info, ob_pe_info)
 
-        stats = compute_suppression_stats(df)
+        # Update in-memory history strip
+        update_history(
+            df,
+            stats,
+            itm_ce_info,
+            ce_div_level,
+            ob_ce_info,
+            itm_pe_info,
+            pe_div_level,
+            ob_pe_info,
+        )
+
+        # History section at bottom
+        layout_history_section()
+
         strong_signal = detect_strong_signal(
             df, stats, itm_ce_info, ob_ce_info, itm_pe_info, ob_pe_info
         )
