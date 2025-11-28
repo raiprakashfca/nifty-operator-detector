@@ -35,17 +35,14 @@ NIFTY_INDEX_SYMBOL = "NIFTY 50"  # Kite uses "NSE:NIFTY 50" as instrument
 # --------- KITE CLIENT HELPERS ---------
 @st.cache_resource(show_spinner=False)
 def get_kite_client() -> KiteConnect:
-    """
-    Create and cache a KiteConnect client using API key + access token
-    from Streamlit secrets.
-    """
+    """Create and cache a KiteConnect client using secrets."""
     try:
         api_key = st.secrets["kite"]["api_key"]
         access_token = st.secrets["kite"]["access_token"]
     except Exception:
         st.error(
             "Kite API credentials not found in Streamlit secrets. "
-            "Go to app settings → Secrets and add:\n\n"
+            "Add them as:\n\n"
             "[kite]\napi_key = \"...\"\naccess_token = \"...\""
         )
         st.stop()
@@ -59,12 +56,6 @@ def get_kite_client() -> KiteConnect:
 def get_nifty_option_instruments() -> pd.DataFrame:
     """
     Fetch and cache NIFTY option instruments from NFO for 1 hour.
-
-    In Kite's instruments dump:
-      - exchange: 'NFO'
-      - segment: 'NFO-OPT'
-      - name: 'NIFTY'
-      - instrument_type: 'CE' or 'PE' for options
     """
     kite = get_kite_client()
     try:
@@ -75,10 +66,8 @@ def get_nifty_option_instruments() -> pd.DataFrame:
 
     df = pd.DataFrame(instruments)
     if df.empty:
-        st.warning("NFO instruments list is empty.")
         return df
 
-    # Filter for NIFTY index options (CE + PE)
     df = df[
         (df["exchange"] == "NFO")
         & (df["segment"] == "NFO-OPT")
@@ -86,19 +75,15 @@ def get_nifty_option_instruments() -> pd.DataFrame:
     ].copy()
 
     if df.empty:
-        st.warning("No NIFTY option instruments found after filtering.")
         return df
 
     df["expiry"] = pd.to_datetime(df["expiry"]).dt.date
     df["strike"] = df["strike"].astype(float)
-
     return df
 
 
 def build_instrument_list():
-    """
-    Build the list of instruments to query via ltp().
-    """
+    """Build the list of instruments to query via ltp()."""
     instruments = [f"NSE:{sym}" for sym in HEAVYWEIGHT_SYMBOLS]
     instruments.append(f"NSE:{NIFTY_INDEX_SYMBOL}")
     return instruments
@@ -107,6 +92,7 @@ def build_instrument_list():
 def ensure_nifty_change(df: pd.DataFrame, kite: KiteConnect) -> pd.DataFrame:
     """
     If NIFTY % Change is missing, try a fallback quote() call to compute it.
+    Silent if it fails; we just keep %Change as NaN.
     """
     if df is None or df.empty:
         return df
@@ -117,10 +103,8 @@ def ensure_nifty_change(df: pd.DataFrame, kite: KiteConnect) -> pd.DataFrame:
 
     idx = df[mask].index[0]
     pct = df.at[idx, "% Change"]
-    prev_close = df.at[idx, "Prev Close"]
-    ltp = df.at[idx, "LTP"]
 
-    if pd.isna(pct) or pct is None:
+    if pd.isna(pct):
         try:
             q = kite.quote([f"NSE:{NIFTY_INDEX_SYMBOL}"])
             data = list(q.values())[0]
@@ -132,9 +116,8 @@ def ensure_nifty_change(df: pd.DataFrame, kite: KiteConnect) -> pd.DataFrame:
                 df.at[idx, "LTP"] = last_price
                 df.at[idx, "Prev Close"] = close
                 df.at[idx, "% Change"] = ((last_price - close) / close) * 100.0
-        except Exception as e:
-            # Don't spam, just a soft warning
-            st.warning(f"Fallback NIFTY % change fetch failed: {e}")
+        except Exception:
+            pass  # stay quiet
 
     return df
 
@@ -142,7 +125,6 @@ def ensure_nifty_change(df: pd.DataFrame, kite: KiteConnect) -> pd.DataFrame:
 def fetch_ltp_snapshot(kite: KiteConnect) -> pd.DataFrame:
     """
     Fetch LTP + previous close for NIFTY and heavyweights.
-    Returns a pandas DataFrame.
     """
     instruments = build_instrument_list()
 
@@ -156,7 +138,6 @@ def fetch_ltp_snapshot(kite: KiteConnect) -> pd.DataFrame:
     now = datetime.now(ZoneInfo("Asia/Kolkata"))
 
     for instrument, data in ltp_data.items():
-        # instrument is like "NSE:RELIANCE"
         try:
             _, symbol = instrument.split(":", 1)
         except ValueError:
@@ -166,7 +147,6 @@ def fetch_ltp_snapshot(kite: KiteConnect) -> pd.DataFrame:
         ohlc = data.get("ohlc", {}) or {}
         prev_close = ohlc.get("close")
 
-        # Safely compute % change
         if last_price is not None and prev_close not in (None, 0):
             pct_change = ((last_price - prev_close) / prev_close) * 100.0
         else:
@@ -183,14 +163,11 @@ def fetch_ltp_snapshot(kite: KiteConnect) -> pd.DataFrame:
         )
 
     df = pd.DataFrame(rows)
-
     if df.empty:
         return df
 
-    # Fallback: make sure NIFTY % change is filled if possible
     df = ensure_nifty_change(df, kite)
 
-    # Flag NIFTY row and sort it on top, then biggest movers
     df["is_nifty"] = df["Symbol"].eq(NIFTY_INDEX_SYMBOL)
     df = df.sort_values(
         by=["is_nifty", "% Change"],
@@ -204,12 +181,12 @@ def fetch_ltp_snapshot(kite: KiteConnect) -> pd.DataFrame:
 # --------- SUPPRESSION / INFLATION LOGIC ---------
 def compute_suppression_stats(df: pd.DataFrame):
     """
-    Compute operator-style metrics:
-    - Nifty % change
-    - Avg heavyweights % change
-    - Divergence (heavyweights - Nifty)
-    - Suppression label (for down moves)
-    - Inflation label (for up moves)
+    Compute:
+      - Nifty % change
+      - Avg heavyweights % change
+      - Divergence (heavy - Nifty)
+      - Suppression label
+      - Inflation label
     """
     if df is None or df.empty:
         return None
@@ -233,46 +210,44 @@ def compute_suppression_stats(df: pd.DataFrame):
     divergence = avg_heavy_change - nifty_change
 
     suppression_label = "NORMAL"
-    suppression_explanation = "No clear sign of heavy index suppression."
+    suppression_explanation = "No strong suppression detected."
     inflation_label = "NORMAL"
-    inflation_explanation = "No clear sign of index over-inflation."
+    inflation_explanation = "No strong inflation detected."
 
     abs_div = abs(divergence)
 
     # Suppression: NIFTY mildly down, heavyweights materially weaker
     if (
-        nifty_change <= -0.20   # mild down
-        and nifty_change >= -1.50  # not a crash
-        and divergence <= -0.30  # heavyweights weaker than Nifty
+        nifty_change <= -0.20
+        and nifty_change >= -1.50
+        and divergence <= -0.30
     ):
         if abs_div >= 1.0:
             suppression_label = "HIGH"
             suppression_explanation = (
-                "Heavyweights are significantly weaker than NIFTY – "
-                "possible deliberate suppression while the index looks 'orderly'."
+                "Heavyweights much weaker than NIFTY – strong suppression risk."
             )
         else:
             suppression_label = "MILD"
             suppression_explanation = (
-                "Heavyweights are weaker than NIFTY – some index suppression pressure visible."
+                "Heavyweights weaker than NIFTY – some suppression."
             )
 
     # Inflation: NIFTY mildly up, heavyweights materially stronger
     if (
-        nifty_change >= 0.20    # mild up
-        and nifty_change <= 1.50  # not a euphoric breakout
-        and divergence >= 0.30   # heavyweights stronger than Nifty
+        nifty_change >= 0.20
+        and nifty_change <= 1.50
+        and divergence >= 0.30
     ):
         if abs_div >= 1.0:
             inflation_label = "HIGH"
             inflation_explanation = (
-                "Heavyweights are doing much more lifting than NIFTY – "
-                "possible deliberate index inflation."
+                "Heavyweights much stronger than NIFTY – strong inflation risk."
             )
         else:
             inflation_label = "MILD"
             inflation_explanation = (
-                "Heavyweights are stronger than NIFTY – some over-inflation pressure visible."
+                "Heavyweights stronger than NIFTY – some inflation."
             )
 
     return {
@@ -290,13 +265,9 @@ def compute_suppression_stats(df: pd.DataFrame):
 def find_atm_option_instrument(
     nifty_opt_df: pd.DataFrame, nifty_spot: float, option_type: str
 ):
-    """
-    Generic ATM finder for CE/PE.
-    option_type: "CE" or "PE"
-    """
+    """Generic ATM finder for CE/PE."""
     if nifty_opt_df is None or nifty_opt_df.empty:
         return None
-
     if nifty_spot is None or pd.isna(nifty_spot):
         return None
 
@@ -304,7 +275,6 @@ def find_atm_option_instrument(
     if option_type not in ("CE", "PE"):
         return None
 
-    # NIFTY strikes are in 50-point increments
     atm_strike = round(nifty_spot / 50.0) * 50
     today = date.today()
 
@@ -312,11 +282,9 @@ def find_atm_option_instrument(
         (nifty_opt_df["instrument_type"] == option_type)
         & (nifty_opt_df["expiry"] >= today)
     ].copy()
-
     if df.empty:
         return None
 
-    # Prefer exact ATM strike, else nearest strike
     df["strike_diff"] = (df["strike"] - atm_strike).abs()
     df = df.sort_values(["strike_diff", "expiry"])
     return df.iloc[0]
@@ -325,10 +293,7 @@ def find_atm_option_instrument(
 def fetch_atm_option_quote(
     kite: KiteConnect, nifty_opt_df: pd.DataFrame, nifty_spot: float, option_type: str
 ):
-    """
-    Find ATM option (CE or PE) and fetch its LTP + % change.
-    Returns a dict with option details or None.
-    """
+    """Find ATM option (CE or PE) and fetch LTP + % change."""
     row = find_atm_option_instrument(nifty_opt_df, nifty_spot, option_type)
     if row is None:
         return None
@@ -371,13 +336,7 @@ def fetch_atm_option_quote(
 
 # --------- ORDER BOOK / DEPTH LOGIC ---------
 def fetch_orderbook_for_option(kite: KiteConnect, opt_info: dict):
-    """
-    Fetch depth (order book) for an option and compute:
-    - total bid qty
-    - total ask qty
-    - top bid/ask prices
-    - bid dominance ratio
-    """
+    """Fetch depth for an option and compute bid/ask dominance."""
     if opt_info is None:
         return None
 
@@ -410,19 +369,15 @@ def fetch_orderbook_for_option(kite: KiteConnect, opt_info: dict):
     else:
         bid_dom_ratio = total_bid_qty / total_ask_qty
 
-    # Classification heuristic:
-    # - STRONG: bid_dom_ratio >= 2
-    # - MILD:   1.2 <= bid_dom_ratio < 2
-    # - NONE:   otherwise
     if bid_dom_ratio >= 2.0 and total_bid_qty > 0:
         footprint = "STRONG"
-        desc = "Bid side is heavily stacked vs ask – strong buying footprint."
+        desc = "Bid side heavily stacked vs ask."
     elif bid_dom_ratio >= 1.2 and total_bid_qty > 0:
         footprint = "MILD"
-        desc = "Bid side is somewhat dominant – mild buying footprint."
+        desc = "Bid side mildly dominant."
     else:
         footprint = "NONE"
-        desc = "No special dominance on bid side."
+        desc = "No clear bid dominance."
 
     return {
         "total_bid_qty": total_bid_qty,
@@ -454,12 +409,9 @@ def _fmt_pct(x):
         return "-"
 
 
-# --------- DIVERGENCE CLASSIFIERS (used for UI + Burst Mode) ---------
+# --------- DIVERGENCE CLASSIFIERS ---------
 def classify_ce_divergence(ce_chg, nifty_change) -> str:
-    """
-    Return 'strong', 'mild', or 'neutral' for CE divergence.
-    CE logic: NIFTY weak, CE resilient/green.
-    """
+    """Return 'strong', 'mild', or 'neutral' for CE divergence."""
     if ce_chg is None or pd.isna(ce_chg):
         return "neutral"
     if nifty_change is None or pd.isna(nifty_change):
@@ -473,15 +425,11 @@ def classify_ce_divergence(ce_chg, nifty_change) -> str:
             return "strong"
         elif ce > nf + 3.0:
             return "mild"
-
     return "neutral"
 
 
 def classify_pe_divergence(pe_chg, nifty_change) -> str:
-    """
-    Return 'strong', 'mild', or 'neutral' for PE divergence.
-    PE logic: NIFTY strong, PE resilient/green.
-    """
+    """Return 'strong', 'mild', or 'neutral' for PE divergence."""
     if pe_chg is None or pd.isna(pe_chg):
         return "neutral"
     if nifty_change is None or pd.isna(nifty_change):
@@ -492,32 +440,27 @@ def classify_pe_divergence(pe_chg, nifty_change) -> str:
 
     if nf >= 0.20:  # Nifty strong
         if pe >= 0.0:
-            # Nifty up, PE flat/green -> very odd
             return "strong"
         elif pe > -3.0:
-            # Nifty up, PE only mildly red -> not collapsing
             return "mild"
-
     return "neutral"
 
 
 # --------- LAYOUT HELPERS ---------
 def layout_header():
-    st.title("NIFTY Operator Detector – Calls & Puts (Burst Mode)")
+    st.title("NIFTY Operator Detector – Burst Mode")
     st.caption(
-        "Detect two games:\n"
-        "1) Index suppression + Call accumulation (buy CE on dips)\n"
-        "2) Index inflation + Put accumulation (buy PE on ramps)\n\n"
-        "Burst Mode: refresh auto-speeds to 2s when a strong operator footprint appears."
+        "Index vs heavyweights + ATM CE/PE + order book.\n"
+        "CE and PE visible together. Burst Mode speeds up refresh on strong footprints."
     )
 
 
 def layout_suppression_section(df: pd.DataFrame):
     stats = compute_suppression_stats(df)
-    st.subheader("🧲 Heavyweight vs Index Monitor")
+    st.subheader("🧲 Heavyweights vs Index")
 
     if stats is None:
-        st.info("Not enough clean data yet to compute suppression / inflation metrics.")
+        st.info("Not enough clean data yet for suppression/inflation.")
         return
 
     nifty_chg = stats["nifty_change"]
@@ -529,32 +472,30 @@ def layout_suppression_section(df: pd.DataFrame):
     infl_expl = stats["infl_expl"]
 
     col1, col2, col3 = st.columns(3)
-    col1.metric("NIFTY % Change", _fmt_pct(nifty_chg))
-    col2.metric("Avg Heavyweights % Change", _fmt_pct(heavy_chg))
-    col3.metric("Divergence (Heavy - NIFTY)", _fmt_pct(divergence))
+    col1.metric("NIFTY %", _fmt_pct(nifty_chg))
+    col2.metric("Avg Heavyweights %", _fmt_pct(heavy_chg))
+    col3.metric("Heavy - NIFTY", _fmt_pct(divergence))
 
-    # Suppression message
     if supp_label == "HIGH":
-        st.error(f"Suppression: {supp_label} – {supp_expl}")
+        st.error(f"Suppression: HIGH – {supp_expl}")
     elif supp_label == "MILD":
-        st.warning(f"Suppression: {supp_label} – {supp_expl}")
+        st.warning(f"Suppression: MILD – {supp_expl}")
     else:
-        st.info(f"Suppression: {supp_label} – {supp_expl}")
+        st.info(f"Suppression: NORMAL – {supp_expl}")
 
-    # Inflation message
     if infl_label == "HIGH":
-        st.error(f"Inflation: {infl_label} – {infl_expl}")
+        st.error(f"Inflation: HIGH – {infl_expl}")
     elif infl_label == "MILD":
-        st.warning(f"Inflation: {infl_label} – {infl_expl}")
+        st.warning(f"Inflation: MILD – {infl_expl}")
     else:
-        st.info(f"Inflation: {infl_label} – {infl_expl}")
+        st.info(f"Inflation: NORMAL – {infl_expl}")
 
 
 def layout_atm_ce_section(atm_ce_info, ob_info, nifty_change):
-    st.subheader("🎯 ATM Call (CE) – Dip-Buying Detector")
+    st.subheader("🎯 ATM CE – Dip Buying")
 
     if atm_ce_info is None:
-        st.info("ATM NIFTY CE data not available yet.")
+        st.info("ATM NIFTY CE not available.")
         return
 
     ce_chg = atm_ce_info["pct_change"]
@@ -563,41 +504,33 @@ def layout_atm_ce_section(atm_ce_info, ob_info, nifty_change):
     strike = atm_ce_info["strike"]
     expiry = atm_ce_info["expiry"]
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("ATM CE", f"{ce_symbol}")
-    col2.metric("Strike", f"{int(strike)}")
-    col3.metric("Expiry", str(expiry))
-    col4.metric("CE LTP", _fmt_price(ce_ltp))
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("ATM CE", ce_symbol)
+        st.metric("Strike", f"{int(strike)}")
+    with col2:
+        st.metric("Expiry", str(expiry))
+        st.metric("CE LTP", _fmt_price(ce_ltp))
 
-    col5, col6 = st.columns(2)
-    col5.metric("CE % Change", _fmt_pct(ce_chg))
-    col6.metric("NIFTY % Change", _fmt_pct(nifty_change))
+    col3, col4 = st.columns(2)
+    col3.metric("CE %", _fmt_pct(ce_chg))
+    col4.metric("NIFTY %", _fmt_pct(nifty_change))
 
     level = classify_ce_divergence(ce_chg, nifty_change)
 
     if level == "strong":
-        note = (
-            "NIFTY is weak, but ATM CE is flat or rising – "
-            "possible aggressive call accumulation on dips."
-        )
-        st.error(f"Call Divergence: STRONG – {note}")
+        msg = "NIFTY weak, CE flat/green – strong call accumulation risk."
+        st.error(f"Divergence: STRONG – {msg}")
     elif level == "mild":
-        note = (
-            "NIFTY is weak, but ATM CE is holding up better – "
-            "mild supportive call buying."
-        )
-        st.warning(f"Call Divergence: MILD – {note}")
+        msg = "NIFTY weak, CE relatively strong – mild call buying."
+        st.warning(f"Divergence: MILD – {msg}")
     else:
-        if nifty_change is None or pd.isna(nifty_change):
-            note = "NIFTY % change unavailable – divergence cannot be evaluated reliably."
-        else:
-            note = "No special CE divergence detected."
-        st.info(f"Call Divergence: NEUTRAL – {note}")
+        st.info("Divergence: NEUTRAL – no special CE signal.")
 
-    st.markdown("**Order Book Footprint (ATM CE)**")
+    st.markdown("**Order Book (CE)**")
 
     if ob_info is None:
-        st.info("Order book data for CE not available.")
+        st.info("Order book for CE not available.")
         return
 
     total_bid = ob_info["total_bid_qty"]
@@ -609,27 +542,27 @@ def layout_atm_ce_section(atm_ce_info, ob_info, nifty_change):
     top_ask = ob_info["top_ask_price"]
 
     colb1, colb2, colb3, colb4 = st.columns(4)
-    colb1.metric("Total Bid Qty (top 5)", f"{int(total_bid)}")
-    colb2.metric("Total Ask Qty (top 5)", f"{int(total_ask)}")
+    colb1.metric("Bid Qty (top 5)", f"{int(total_bid)}")
+    colb2.metric("Ask Qty (top 5)", f"{int(total_ask)}")
     colb3.metric(
-        "Bid/Ask Qty Ratio",
+        "Bid/Ask Qty",
         "-" if ratio in (0.0, float("inf")) else f"{ratio:.2f}",
     )
-    colb4.metric("Top Bid / Ask", f"{_fmt_price(top_bid)} / {_fmt_price(top_ask)}")
+    colb4.metric("Top Bid/Ask", f"{_fmt_price(top_bid)} / {_fmt_price(top_ask)}")
 
     if footprint == "STRONG":
-        st.error(f"Big Buyer Footprint (CE): STRONG – {desc}")
+        st.error(f"Footprint: STRONG – {desc}")
     elif footprint == "MILD":
-        st.warning(f"Big Buyer Footprint (CE): MILD – {desc}")
+        st.warning(f"Footprint: MILD – {desc}")
     else:
-        st.info(f"Big Buyer Footprint (CE): NONE – {desc}")
+        st.info(f"Footprint: NONE – {desc}")
 
 
 def layout_atm_pe_section(atm_pe_info, ob_info, nifty_change):
-    st.subheader("🩸 ATM Put (PE) – Ramp-and-Dump Detector")
+    st.subheader("🩸 ATM PE – Ramp & Dump")
 
     if atm_pe_info is None:
-        st.info("ATM NIFTY PE data not available yet.")
+        st.info("ATM NIFTY PE not available.")
         return
 
     pe_chg = atm_pe_info["pct_change"]
@@ -638,41 +571,33 @@ def layout_atm_pe_section(atm_pe_info, ob_info, nifty_change):
     strike = atm_pe_info["strike"]
     expiry = atm_pe_info["expiry"]
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("ATM PE", f"{pe_symbol}")
-    col2.metric("Strike", f"{int(strike)}")
-    col3.metric("Expiry", str(expiry))
-    col4.metric("PE LTP", _fmt_price(pe_ltp))
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("ATM PE", pe_symbol)
+        st.metric("Strike", f"{int(strike)}")
+    with col2:
+        st.metric("Expiry", str(expiry))
+        st.metric("PE LTP", _fmt_price(pe_ltp))
 
-    col5, col6 = st.columns(2)
-    col5.metric("PE % Change", _fmt_pct(pe_chg))
-    col6.metric("NIFTY % Change", _fmt_pct(nifty_change))
+    col3, col4 = st.columns(2)
+    col3.metric("PE %", _fmt_pct(pe_chg))
+    col4.metric("NIFTY %", _fmt_pct(nifty_change))
 
     level = classify_pe_divergence(pe_chg, nifty_change)
 
     if level == "strong":
-        note = (
-            "NIFTY is strong, but ATM PE is flat or rising – "
-            "possible aggressive put accumulation into the ramp."
-        )
-        st.error(f"Put Divergence: STRONG – {note}")
+        msg = "NIFTY strong, PE flat/green – strong put accumulation risk."
+        st.error(f"Divergence: STRONG – {msg}")
     elif level == "mild":
-        note = (
-            "NIFTY is strong, but ATM PE is not collapsing – "
-            "mild sign of cautious put buying / hedging."
-        )
-        st.warning(f"Put Divergence: MILD – {note}")
+        msg = "NIFTY strong, PE not collapsing – mild put buying/hedging."
+        st.warning(f"Divergence: MILD – {msg}")
     else:
-        if nifty_change is None or pd.isna(nifty_change):
-            note = "NIFTY % change unavailable – divergence cannot be evaluated reliably."
-        else:
-            note = "No special PE divergence detected."
-        st.info(f"Put Divergence: NEUTRAL – {note}")
+        st.info("Divergence: NEUTRAL – no special PE signal.")
 
-    st.markdown("**Order Book Footprint (ATM PE)**")
+    st.markdown("**Order Book (PE)**")
 
     if ob_info is None:
-        st.info("Order book data for PE not available.")
+        st.info("Order book for PE not available.")
         return
 
     total_bid = ob_info["total_bid_qty"]
@@ -684,51 +609,40 @@ def layout_atm_pe_section(atm_pe_info, ob_info, nifty_change):
     top_ask = ob_info["top_ask_price"]
 
     colb1, colb2, colb3, colb4 = st.columns(4)
-    colb1.metric("Total Bid Qty (top 5)", f"{int(total_bid)}")
-    colb2.metric("Total Ask Qty (top 5)", f"{int(total_ask)}")
+    colb1.metric("Bid Qty (top 5)", f"{int(total_bid)}")
+    colb2.metric("Ask Qty (top 5)", f"{int(total_ask)}")
     colb3.metric(
-        "Bid/Ask Qty Ratio",
+        "Bid/Ask Qty",
         "-" if ratio in (0.0, float("inf")) else f"{ratio:.2f}",
     )
-    colb4.metric("Top Bid / Ask", f"{_fmt_price(top_bid)} / {_fmt_price(top_ask)}")
+    colb4.metric("Top Bid/Ask", f"{_fmt_price(top_bid)} / {_fmt_price(top_ask)}")
 
     if footprint == "STRONG":
-        st.error(f"Big Buyer Footprint (PE): STRONG – {desc}")
+        st.error(f"Footprint: STRONG – {desc}")
     elif footprint == "MILD":
-        st.warning(f"Big Buyer Footprint (PE): MILD – {desc}")
+        st.warning(f"Footprint: MILD – {desc}")
     else:
-        st.info(f"Big Buyer Footprint (PE): NONE – {desc}")
+        st.info(f"Footprint: NONE – {desc}")
 
 
 def layout_snapshot(df: pd.DataFrame, atm_ce_info, ob_ce_info, atm_pe_info, ob_pe_info):
     if df is None or df.empty:
-        st.warning("No data returned from Kite API.")
+        st.warning("No data returned from Kite.")
         return
 
     nifty_rows = df[df["Symbol"] == NIFTY_INDEX_SYMBOL]
-
     if nifty_rows.empty:
-        st.warning(
-            "NIFTY 50 row not found in data. Showing only heavyweights table."
-        )
+        st.warning("NIFTY row missing. Showing only heavyweights.")
         _render_heavyweights_table(df)
         return
 
     nifty_row = nifty_rows.iloc[0]
-
     nifty_ltp = nifty_row["LTP"]
     nifty_change = nifty_row["% Change"]
     nifty_ts = nifty_row["Timestamp"]
 
-    if pd.isna(nifty_ltp):
-        nifty_ltp_display = "-"
-    else:
-        nifty_ltp_display = f"{float(nifty_ltp):.2f}"
-
-    if pd.isna(nifty_change):
-        nifty_change_display = "-"
-    else:
-        nifty_change_display = f"{float(nifty_change):.2f}%"
+    nifty_ltp_display = _fmt_price(nifty_ltp)
+    nifty_change_display = _fmt_pct(nifty_change)
 
     if isinstance(nifty_ts, datetime):
         ts_display = nifty_ts.astimezone(ZoneInfo("Asia/Kolkata")).strftime("%H:%M:%S")
@@ -738,28 +652,24 @@ def layout_snapshot(df: pd.DataFrame, atm_ce_info, ob_ce_info, atm_pe_info, ob_p
     st.subheader("📈 NIFTY Snapshot")
     col1, col2, col3 = st.columns(3)
     col1.metric("NIFTY LTP", nifty_ltp_display)
-    col2.metric("NIFTY % Change", nifty_change_display)
+    col2.metric("NIFTY %", nifty_change_display)
     col3.write(f"Timestamp (IST): {ts_display}")
 
-    # Heavyweight vs index: shows both suppression & inflation flags
     layout_suppression_section(df)
 
-    # Tabs for CE and PE to avoid clutter
-    tab_ce, tab_pe = st.tabs(["ATM CE – Dip Buying", "ATM PE – Ramp & Dump"])
-
-    with tab_ce:
+    st.subheader("🎯 Options Operator Footprint – ATM CE & PE")
+    col_ce, col_pe = st.columns(2)
+    with col_ce:
         layout_atm_ce_section(atm_ce_info, ob_ce_info, nifty_change)
-
-    with tab_pe:
+    with col_pe:
         layout_atm_pe_section(atm_pe_info, ob_pe_info, nifty_change)
 
-    st.subheader("🏋️ Heavyweights Snapshot")
+    st.subheader("🏋️ Heavyweights")
     _render_heavyweights_table(df)
 
 
 def _render_heavyweights_table(df: pd.DataFrame):
     display_df = df.copy()
-
     display_df["LTP"] = display_df["LTP"].map(_fmt_price)
     display_df["Prev Close"] = display_df["Prev Close"].map(_fmt_price)
     display_df["% Change"] = display_df["% Change"].map(_fmt_pct)
@@ -781,8 +691,7 @@ def detect_strong_signal(
     ob_pe_info: dict | None,
 ) -> bool:
     """
-    Decide if Burst Mode should be active.
-    Criteria:
+    Burst Mode when:
       - Suppression HIGH or Inflation HIGH
       - OR strong CE divergence + CE footprint MILD/STRONG
       - OR strong PE divergence + PE footprint MILD/STRONG
@@ -792,7 +701,6 @@ def detect_strong_signal(
 
     strong = False
 
-    # 1) Suppression / Inflation
     if stats is not None:
         if stats.get("supp_label") == "HIGH" or stats.get("infl_label") == "HIGH":
             strong = True
@@ -803,14 +711,12 @@ def detect_strong_signal(
 
     nifty_change = nifty_rows.iloc[0]["% Change"]
 
-    # 2) CE divergence + footprint
     if atm_ce_info is not None:
         ce_level = classify_ce_divergence(atm_ce_info.get("pct_change"), nifty_change)
         ce_fp = (ob_ce_info or {}).get("footprint", "NONE")
         if ce_level == "strong" and ce_fp in ("MILD", "STRONG"):
             strong = True
 
-    # 3) PE divergence + footprint
     if atm_pe_info is not None:
         pe_level = classify_pe_divergence(atm_pe_info.get("pct_change"), nifty_change)
         pe_fp = (ob_pe_info or {}).get("footprint", "NONE")
@@ -827,22 +733,21 @@ def main():
     with st.sidebar:
         st.header("Settings")
         base_refresh_seconds = st.slider(
-            "Base auto-refresh (seconds)", 5, 60, 15, step=5
+            "Base auto-refresh (s)", 5, 60, 15, step=5
         )
         st.caption(
-            "When calm: uses this base interval.\n"
-            f"When Burst Mode triggers: auto-switches to ~{BURST_REFRESH_SECONDS}s."
+            "Calm market → base interval.\n"
+            f"Strong signal → auto {BURST_REFRESH_SECONDS}s Burst Mode."
         )
 
     kite = get_kite_client()
     nifty_opt_df = get_nifty_option_instruments()
 
-    # --------- FETCH + RENDER + DETECT STRONG SIGNAL ---------
     def run_fetch_and_render():
         df = fetch_ltp_snapshot(kite)
         if df.empty:
-            st.warning("No LTP data available from Kite.")
-            return False  # no burst
+            st.warning("No LTP data from Kite.")
+            return False
 
         nifty_rows = df[df["Symbol"] == NIFTY_INDEX_SYMBOL]
 
@@ -854,50 +759,43 @@ def main():
         if not nifty_rows.empty and not nifty_opt_df.empty:
             nifty_spot = nifty_rows.iloc[0]["LTP"]
             if nifty_spot is not None and not pd.isna(nifty_spot):
-                # ATM CE
                 atm_ce_info = fetch_atm_option_quote(
                     kite, nifty_opt_df, float(nifty_spot), "CE"
                 )
                 if atm_ce_info is not None:
                     ob_ce_info = fetch_orderbook_for_option(kite, atm_ce_info)
 
-                # ATM PE
                 atm_pe_info = fetch_atm_option_quote(
                     kite, nifty_opt_df, float(nifty_spot), "PE"
                 )
                 if atm_pe_info is not None:
                     ob_pe_info = fetch_orderbook_for_option(kite, atm_pe_info)
 
-        # Draw full layout
         layout_snapshot(df, atm_ce_info, ob_ce_info, atm_pe_info, ob_pe_info)
 
-        # Compute stats for burst decision (separately from UI)
         stats = compute_suppression_stats(df)
         strong_signal = detect_strong_signal(
             df, stats, atm_ce_info, ob_ce_info, atm_pe_info, ob_pe_info
         )
-
         return strong_signal
 
     strong_signal = run_fetch_and_render()
 
-    # --------- DECIDE EFFECTIVE REFRESH INTERVAL ---------
     if strong_signal:
         effective_refresh = BURST_REFRESH_SECONDS
         with st.sidebar:
             st.warning(
-                f"🔥 Burst Mode ACTIVE – strong operator footprint detected.\n"
-                f"Auto-refresh ~every {BURST_REFRESH_SECONDS} seconds."
+                f"🔥 Burst Mode ACTIVE – strong footprint detected.\n"
+                f"Refresh ~every {BURST_REFRESH_SECONDS}s."
             )
     else:
         effective_refresh = base_refresh_seconds
         with st.sidebar:
             st.info(
-                f"Market calm (by this model). Using base refresh: "
-                f"{base_refresh_seconds} seconds."
+                f"Market calm (by this model). "
+                f"Base refresh: {base_refresh_seconds}s."
             )
 
-    # --------- SCHEDULE NEXT AUTO-REFRESH ---------
     st_autorefresh(interval=int(effective_refresh * 1000), key="auto_refresh")
 
 
