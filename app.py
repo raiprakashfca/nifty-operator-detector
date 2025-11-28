@@ -263,18 +263,19 @@ def compute_suppression_stats(df: pd.DataFrame):
     }
 
 
-# --------- STRICT ITM (vs SPOT) OPTION FINDERS & QUOTES ---------
+# --------- STRICT ITM (>=100pts) OPTION FINDERS & QUOTES ---------
 def find_itm_near_spot_instrument(
     nifty_opt_df: pd.DataFrame, nifty_spot: float, option_type: str
 ):
     """
-    Find strictly ITM option closest to SPOT:
+    Find ITM option at least 100 points in-the-money, closest to SPOT:
 
-      - For CE: strike < spot (ITM), closest to spot.
-      - For PE: strike > spot (ITM), closest to spot.
+      - For CE: strike <= spot - 100 (deep ITM), choose closest to spot.
+      - For PE: strike >= spot + 100 (deep ITM), choose closest to spot.
 
-    If there is no strictly ITM strike on that side (edge-case),
-    fall back to nearest strike overall (including ATM).
+    If no such deep ITM exists:
+      1) Fall back to strict ITM by spot (CE: strike < spot, PE: strike > spot).
+      2) If even that is empty, fall back to nearest strike overall (incl. ATM).
     """
     if nifty_opt_df is None or nifty_opt_df.empty:
         return None
@@ -294,19 +295,29 @@ def find_itm_near_spot_instrument(
     if df.empty:
         return None
 
-    # Strict ITM by spot
+    # Step 1: Deep ITM (>= 100 points)
     if option_type == "CE":
-        df_itm = df[df["strike"] < nifty_spot].copy()
+        df_deep_itm = df[df["strike"] <= (nifty_spot - 100)].copy()
     else:  # PE
-        df_itm = df[df["strike"] > nifty_spot].copy()
+        df_deep_itm = df[df["strike"] >= (nifty_spot + 100)].copy()
 
-    if not df_itm.empty:
-        df_itm["spot_diff"] = (df_itm["strike"] - nifty_spot).abs()
-        df_sel = df_itm
+    if not df_deep_itm.empty:
+        df_deep_itm["spot_diff"] = (df_deep_itm["strike"] - nifty_spot).abs()
+        df_sel = df_deep_itm
     else:
-        # Fallback: nearest to spot including ATM
-        df["spot_diff"] = (df["strike"] - nifty_spot).abs()
-        df_sel = df
+        # Step 2: strict ITM (no 100pt buffer, but still not ATM)
+        if option_type == "CE":
+            df_itm = df[df["strike"] < nifty_spot].copy()
+        else:  # PE
+            df_itm = df[df["strike"] > nifty_spot].copy()
+
+        if not df_itm.empty:
+            df_itm["spot_diff"] = (df_itm["strike"] - nifty_spot).abs()
+            df_sel = df_itm
+        else:
+            # Step 3: fallback – nearest to spot including ATM
+            df["spot_diff"] = (df["strike"] - nifty_spot).abs()
+            df_sel = df
 
     df_sel = df_sel.sort_values(["spot_diff", "expiry"])
     return df_sel.iloc[0]
@@ -316,7 +327,7 @@ def fetch_itm_option_quote(
     kite: KiteConnect, nifty_opt_df: pd.DataFrame, nifty_spot: float, option_type: str
 ):
     """
-    Find strict-ITM-near-spot option (CE or PE) and fetch:
+    Find deep-ITM-near-spot option (CE or PE) and fetch:
       - LTP, % change, prev close
       - cumulative volume
     Uses kite.quote() so we also get volume.
@@ -532,7 +543,7 @@ def compute_recent_volume_15s(instrument: str, current_volume):
 def layout_header():
     st.title("NIFTY Operator Detector – Burst Mode")
     st.caption(
-        "Index vs heavyweights + strict-ITM-near-spot CE/PE + order book + est. 15s volume.\n"
+        "Index vs heavyweights + ≥100-pt ITM CE/PE + order book + est. 15s volume.\n"
         "CE and PE visible together. Burst Mode speeds up refresh on strong footprints."
     )
 
@@ -574,10 +585,10 @@ def layout_suppression_section(df: pd.DataFrame):
 
 
 def layout_itm_ce_section(itm_ce_info, ob_info, nifty_change):
-    st.subheader("🎯 Strict ITM CE – Dip Buying")
+    st.subheader("🎯 ≥100pt ITM CE – Dip Buying")
 
     if itm_ce_info is None:
-        st.info("Strict ITM NIFTY CE not available.")
+        st.info("Deep ITM NIFTY CE not available.")
         return
 
     ce_chg = itm_ce_info["pct_change"]
@@ -609,10 +620,10 @@ def layout_itm_ce_section(itm_ce_info, ob_info, nifty_change):
     level = classify_ce_divergence(ce_chg, nifty_change)
 
     if level == "strong":
-        msg = "NIFTY weak, ITM CE flat/green – strong call accumulation risk."
+        msg = "NIFTY weak, deep ITM CE flat/green – strong call accumulation risk."
         st.error(f"Divergence: STRONG – {msg}")
     elif level == "mild":
-        msg = "NIFTY weak, ITM CE relatively strong – mild call buying."
+        msg = "NIFTY weak, deep ITM CE relatively strong – mild call buying."
         st.warning(f"Divergence: MILD – {msg}")
     else:
         st.info("Divergence: NEUTRAL – no special CE signal.")
@@ -640,7 +651,7 @@ def layout_itm_ce_section(itm_ce_info, ob_info, nifty_change):
         "-" if ratio in (0.0, float("inf")) else f"{ratio:.2f}",
     )
 
-    # Second row: prices, with more width so nothing gets truncated
+    # Second row: prices
     colp1, colp2 = st.columns(2)
     colp1.metric("Top Bid", _fmt_price(top_bid))
     colp2.metric("Top Ask", _fmt_price(top_ask))
@@ -654,10 +665,10 @@ def layout_itm_ce_section(itm_ce_info, ob_info, nifty_change):
 
 
 def layout_itm_pe_section(itm_pe_info, ob_info, nifty_change):
-    st.subheader("🩸 Strict ITM PE – Ramp & Dump")
+    st.subheader("🩸 ≥100pt ITM PE – Ramp & Dump")
 
     if itm_pe_info is None:
-        st.info("Strict ITM NIFTY PE not available.")
+        st.info("Deep ITM NIFTY PE not available.")
         return
 
     pe_chg = itm_pe_info["pct_change"]
@@ -689,10 +700,10 @@ def layout_itm_pe_section(itm_pe_info, ob_info, nifty_change):
     level = classify_pe_divergence(pe_chg, nifty_change)
 
     if level == "strong":
-        msg = "NIFTY strong, ITM PE flat/green – strong put accumulation risk."
+        msg = "NIFTY strong, deep ITM PE flat/green – strong put accumulation risk."
         st.error(f"Divergence: STRONG – {msg}")
     elif level == "mild":
-        msg = "NIFTY strong, ITM PE not collapsing – mild put buying/hedging."
+        msg = "NIFTY strong, deep ITM PE not collapsing – mild put buying/hedging."
         st.warning(f"Divergence: MILD – {msg}")
     else:
         st.info("Divergence: NEUTRAL – no special PE signal.")
@@ -720,7 +731,7 @@ def layout_itm_pe_section(itm_pe_info, ob_info, nifty_change):
         "-" if ratio in (0.0, float("inf")) else f"{ratio:.2f}",
     )
 
-    # Second row: prices, separate metrics so values are fully visible
+    # Second row: prices
     colp1, colp2 = st.columns(2)
     colp1.metric("Top Bid", _fmt_price(top_bid))
     colp2.metric("Top Ask", _fmt_price(top_ask))
@@ -765,7 +776,7 @@ def layout_snapshot(df: pd.DataFrame, itm_ce_info, ob_ce_info, itm_pe_info, ob_p
 
     layout_suppression_section(df)
 
-    st.subheader("🎯 Options Operator Footprint – Strict ITM CE & PE")
+    st.subheader("🎯 Options Operator Footprint – Deep ITM CE & PE")
     col_ce, col_pe = st.columns(2)
     with col_ce:
         layout_itm_ce_section(itm_ce_info, ob_ce_info, nifty_change)
@@ -867,14 +878,14 @@ def main():
         if not nifty_rows.empty and not nifty_opt_df.empty:
             nifty_spot = nifty_rows.iloc[0]["LTP"]
             if nifty_spot is not None and not pd.isna(nifty_spot):
-                # Strict ITM CE
+                # Deep ITM CE
                 itm_ce_info = fetch_itm_option_quote(
                     kite, nifty_opt_df, float(nifty_spot), "CE"
                 )
                 if itm_ce_info is not None:
                     ob_ce_info = fetch_orderbook_for_option(kite, itm_ce_info)
 
-                # Strict ITM PE
+                # Deep ITM PE
                 itm_pe_info = fetch_itm_option_quote(
                     kite, nifty_opt_df, float(nifty_spot), "PE"
                 )
