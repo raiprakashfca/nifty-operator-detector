@@ -263,15 +263,18 @@ def compute_suppression_stats(df: pd.DataFrame):
     }
 
 
-# --------- ATM→ITM OPTION FINDERS & QUOTES ---------
-def find_itm_near_atm_instrument(
+# --------- STRICT ITM (vs SPOT) OPTION FINDERS & QUOTES ---------
+def find_itm_near_spot_instrument(
     nifty_opt_df: pd.DataFrame, nifty_spot: float, option_type: str
 ):
     """
-    Find ITM closest to ATM:
-      - CE: strike <= ATM, nearest below
-      - PE: strike >= ATM, nearest above
-    If that subset is empty, fall back to nearest strike overall.
+    Find strictly ITM option closest to SPOT:
+
+      - For CE: strike < spot (ITM), closest to spot.
+      - For PE: strike > spot (ITM), closest to spot.
+
+    If there is no strictly ITM strike on that side (edge-case),
+    fall back to nearest strike overall (including ATM).
     """
     if nifty_opt_df is None or nifty_opt_df.empty:
         return None
@@ -282,7 +285,6 @@ def find_itm_near_atm_instrument(
     if option_type not in ("CE", "PE"):
         return None
 
-    atm_strike = round(nifty_spot / 50.0) * 50
     today = date.today()
 
     df = nifty_opt_df[
@@ -292,21 +294,21 @@ def find_itm_near_atm_instrument(
     if df.empty:
         return None
 
-    # ITM filter
+    # Strict ITM by spot
     if option_type == "CE":
-        df_itm = df[df["strike"] <= atm_strike].copy()
+        df_itm = df[df["strike"] < nifty_spot].copy()
     else:  # PE
-        df_itm = df[df["strike"] >= atm_strike].copy()
+        df_itm = df[df["strike"] > nifty_spot].copy()
 
     if not df_itm.empty:
-        df_itm["strike_diff"] = (df_itm["strike"] - atm_strike).abs()
+        df_itm["spot_diff"] = (df_itm["strike"] - nifty_spot).abs()
         df_sel = df_itm
     else:
-        # fallback: nearest strike overall
-        df["strike_diff"] = (df["strike"] - atm_strike).abs()
+        # Fallback: nearest to spot including ATM
+        df["spot_diff"] = (df["strike"] - nifty_spot).abs()
         df_sel = df
 
-    df_sel = df_sel.sort_values(["strike_diff", "expiry"])
+    df_sel = df_sel.sort_values(["spot_diff", "expiry"])
     return df_sel.iloc[0]
 
 
@@ -314,12 +316,12 @@ def fetch_itm_option_quote(
     kite: KiteConnect, nifty_opt_df: pd.DataFrame, nifty_spot: float, option_type: str
 ):
     """
-    Find ITM-near-ATM option (CE or PE) and fetch:
+    Find strict-ITM-near-spot option (CE or PE) and fetch:
       - LTP, % change, prev close
       - cumulative volume
     Uses kite.quote() so we also get volume.
     """
-    row = find_itm_near_atm_instrument(nifty_opt_df, nifty_spot, option_type)
+    row = find_itm_near_spot_instrument(nifty_opt_df, nifty_spot, option_type)
     if row is None:
         return None
 
@@ -342,7 +344,7 @@ def fetch_itm_option_quote(
     ohlc = data.get("ohlc", {}) or {}
     prev_close = ohlc.get("close")
 
-    # volume key is 'volume' in most Kite responses; also try 'volume_traded'
+    # volume key is 'volume_traded'; also try 'volume'
     volume_total = data.get("volume_traded")
     if volume_total is None:
         volume_total = data.get("volume")
@@ -498,7 +500,6 @@ def compute_recent_volume_15s(instrument: str, current_volume):
     now = datetime.now(ZoneInfo("Asia/Kolkata"))
 
     if current_volume is None or pd.isna(current_volume):
-        # Store state but we can't compute a delta yet
         st.session_state[f"vol_state_{instrument}"] = (None, now)
         return None
 
@@ -506,7 +507,6 @@ def compute_recent_volume_15s(instrument: str, current_volume):
     last = st.session_state.get(key)
 
     if last is None:
-        # First observation, store and return None
         st.session_state[key] = (current_volume, now)
         return None
 
@@ -532,7 +532,7 @@ def compute_recent_volume_15s(instrument: str, current_volume):
 def layout_header():
     st.title("NIFTY Operator Detector – Burst Mode")
     st.caption(
-        "Index vs heavyweights + ITM-near-ATM CE/PE + order book + est. 15s volume.\n"
+        "Index vs heavyweights + strict-ITM-near-spot CE/PE + order book + est. 15s volume.\n"
         "CE and PE visible together. Burst Mode speeds up refresh on strong footprints."
     )
 
@@ -574,10 +574,10 @@ def layout_suppression_section(df: pd.DataFrame):
 
 
 def layout_itm_ce_section(itm_ce_info, ob_info, nifty_change):
-    st.subheader("🎯 ITM-near-ATM CE – Dip Buying")
+    st.subheader("🎯 Strict ITM CE – Dip Buying")
 
     if itm_ce_info is None:
-        st.info("ITM NIFTY CE not available.")
+        st.info("Strict ITM NIFTY CE not available.")
         return
 
     ce_chg = itm_ce_info["pct_change"]
@@ -631,14 +631,19 @@ def layout_itm_ce_section(itm_ce_info, ob_info, nifty_change):
     top_bid = ob_info["top_bid_price"]
     top_ask = ob_info["top_ask_price"]
 
-    colb1, colb2, colb3, colb4 = st.columns(4)
+    # First row: quantities & ratio
+    colb1, colb2, colb3 = st.columns(3)
     colb1.metric("Bid Qty (top 5)", _fmt_int(total_bid))
     colb2.metric("Ask Qty (top 5)", _fmt_int(total_ask))
     colb3.metric(
         "Bid/Ask Qty",
         "-" if ratio in (0.0, float("inf")) else f"{ratio:.2f}",
     )
-    colb4.metric("Top Bid/Ask", f"{_fmt_price(top_bid)} / {_fmt_price(top_ask)}")
+
+    # Second row: prices, with more width so nothing gets truncated
+    colp1, colp2 = st.columns(2)
+    colp1.metric("Top Bid", _fmt_price(top_bid))
+    colp2.metric("Top Ask", _fmt_price(top_ask))
 
     if footprint == "STRONG":
         st.error(f"Footprint: STRONG – {desc}")
@@ -649,10 +654,10 @@ def layout_itm_ce_section(itm_ce_info, ob_info, nifty_change):
 
 
 def layout_itm_pe_section(itm_pe_info, ob_info, nifty_change):
-    st.subheader("🩸 ITM-near-ATM PE – Ramp & Dump")
+    st.subheader("🩸 Strict ITM PE – Ramp & Dump")
 
     if itm_pe_info is None:
-        st.info("ITM NIFTY PE not available.")
+        st.info("Strict ITM NIFTY PE not available.")
         return
 
     pe_chg = itm_pe_info["pct_change"]
@@ -706,14 +711,19 @@ def layout_itm_pe_section(itm_pe_info, ob_info, nifty_change):
     top_bid = ob_info["top_bid_price"]
     top_ask = ob_info["top_ask_price"]
 
-    colb1, colb2, colb3, colb4 = st.columns(4)
+    # First row: quantities & ratio
+    colb1, colb2, colb3 = st.columns(3)
     colb1.metric("Bid Qty (top 5)", _fmt_int(total_bid))
     colb2.metric("Ask Qty (top 5)", _fmt_int(total_ask))
     colb3.metric(
         "Bid/Ask Qty",
         "-" if ratio in (0.0, float("inf")) else f"{ratio:.2f}",
     )
-    colb4.metric("Top Bid/Ask", f"{_fmt_price(top_bid)} / {_fmt_price(top_ask)}")
+
+    # Second row: prices, separate metrics so values are fully visible
+    colp1, colp2 = st.columns(2)
+    colp1.metric("Top Bid", _fmt_price(top_bid))
+    colp2.metric("Top Ask", _fmt_price(top_ask))
 
     if footprint == "STRONG":
         st.error(f"Footprint: STRONG – {desc}")
@@ -755,7 +765,7 @@ def layout_snapshot(df: pd.DataFrame, itm_ce_info, ob_ce_info, itm_pe_info, ob_p
 
     layout_suppression_section(df)
 
-    st.subheader("🎯 Options Operator Footprint – ITM CE & PE")
+    st.subheader("🎯 Options Operator Footprint – Strict ITM CE & PE")
     col_ce, col_pe = st.columns(2)
     with col_ce:
         layout_itm_ce_section(itm_ce_info, ob_ce_info, nifty_change)
@@ -857,14 +867,14 @@ def main():
         if not nifty_rows.empty and not nifty_opt_df.empty:
             nifty_spot = nifty_rows.iloc[0]["LTP"]
             if nifty_spot is not None and not pd.isna(nifty_spot):
-                # ITM CE
+                # Strict ITM CE
                 itm_ce_info = fetch_itm_option_quote(
                     kite, nifty_opt_df, float(nifty_spot), "CE"
                 )
                 if itm_ce_info is not None:
                     ob_ce_info = fetch_orderbook_for_option(kite, itm_ce_info)
 
-                # ITM PE
+                # Strict ITM PE
                 itm_pe_info = fetch_itm_option_quote(
                     kite, nifty_opt_df, float(nifty_spot), "PE"
                 )
