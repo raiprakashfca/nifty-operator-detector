@@ -2,7 +2,7 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 from kiteconnect import KiteConnect
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 
 # --------- PAGE CONFIG ---------
@@ -13,6 +13,10 @@ st.set_page_config(
 
 # --------- BURST MODE CONFIG ---------
 BURST_REFRESH_SECONDS = 2  # when strong operator footprint is detected
+
+# --------- HISTORY WINDOW (MINUTES) ---------
+HISTORY_WINDOW_MINUTES = 5  # keep last 5 minutes of ticks
+
 
 # --------- EMBEDDED BEEP (WAV, BASE64) ---------
 # Short 0.25s beep tone encoded as base64 WAV.
@@ -598,7 +602,7 @@ def compute_recent_volume_15s(instrument: str, current_volume):
     return max(est_15s, 0.0)
 
 
-# --------- HISTORY TRACKING ---------
+# --------- HISTORY TRACKING (LAST 5 MINUTES) ---------
 def update_history(
     df: pd.DataFrame,
     stats: dict | None,
@@ -610,7 +614,7 @@ def update_history(
     ob_pe_info: dict | None,
 ):
     """
-    Store last ~20 refresh snapshots in st.session_state["operator_history"].
+    Store last HISTORY_WINDOW_MINUTES of snapshots in st.session_state["operator_history"].
     """
     if df is None or df.empty:
         return
@@ -623,12 +627,18 @@ def update_history(
     nifty_pct = nifty_row["% Change"]
     ts = nifty_row["Timestamp"]
 
+    # Ensure ts is aware in IST
     if isinstance(ts, datetime):
-        ts_str = ts.astimezone(ZoneInfo("Asia/Kolkata")).strftime("%H:%M:%S")
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
+        ts_ist = ts.astimezone(ZoneInfo("Asia/Kolkata"))
     else:
-        ts_str = str(ts)
+        ts_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
+
+    ts_str = ts_ist.strftime("%H:%M:%S")
 
     record = {
+        "_ts": ts_ist,  # raw datetime for pruning
         "Time": ts_str,
         "NIFTY %": None if pd.isna(nifty_pct) else float(nifty_pct),
         "Supp": stats.get("supp_label") if stats else None,
@@ -663,12 +673,16 @@ def update_history(
 
     history = st.session_state.get("operator_history", [])
     history.append(record)
-    history = history[-20:]  # keep last 20
+
+    # Keep only last HISTORY_WINDOW_MINUTES
+    cutoff = ts_ist - timedelta(minutes=HISTORY_WINDOW_MINUTES)
+    history = [r for r in history if r.get("_ts") and r["_ts"] >= cutoff]
+
     st.session_state["operator_history"] = history
 
 
 def layout_history_section():
-    st.subheader("⏱ Last Few Refreshes (In-Memory)")
+    st.subheader("⏱ Last 5 Minutes (In-Memory)")
     history = st.session_state.get("operator_history", [])
 
     if not history:
@@ -676,6 +690,10 @@ def layout_history_section():
         return
 
     df_hist = pd.DataFrame(history)
+
+    # Drop internal timestamp column
+    if "_ts" in df_hist.columns:
+        df_hist = df_hist.drop(columns=["_ts"])
 
     # Pretty formatting for % columns
     for col in ["NIFTY %", "CE %", "PE %"]:
@@ -704,7 +722,10 @@ def layout_history_section():
         hide_index=True,
         use_container_width=True,
     )
-    st.caption("This history resets if the app reloads or the session resets.")
+    st.caption(
+        f"Window: last {HISTORY_WINDOW_MINUTES} minutes (session memory only; "
+        "resets if the app/session reloads)."
+    )
 
 
 # --------- LAYOUT HELPERS ---------
@@ -1092,7 +1113,7 @@ def main():
         # Render main layout and get stats from there
         stats = layout_snapshot(df, itm_ce_info, ob_ce_info, itm_pe_info, ob_pe_info)
 
-        # Update in-memory history strip
+        # Update in-memory history strip (last 5 minutes)
         update_history(
             df,
             stats,
