@@ -1,6 +1,7 @@
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 from kiteconnect import KiteConnect
+import gspread
 import pandas as pd
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
@@ -92,23 +93,82 @@ HEAVYWEIGHT_SYMBOLS = [
 NIFTY_INDEX_SYMBOL = "NIFTY 50"   # NSE index
 
 
-# --------- KITE CLIENT HELPERS ---------
+# --------- KITE CLIENT HELPERS (FROM ZERODHATOKENSTORE) ---------
 @st.cache_resource(show_spinner=False)
-def get_kite_client() -> KiteConnect:
-    """Create and cache a KiteConnect client using secrets."""
+def get_gspread_client():
+    """
+    Create a gspread client from service account JSON in st.secrets["gcp_service_account"].
+    """
     try:
-        api_key = st.secrets["kite"]["api_key"]
-        access_token = st.secrets["kite"]["access_token"]
+        sa_info = st.secrets["gcp_service_account"]
     except Exception:
         st.error(
-            "Kite API credentials not found in Streamlit secrets. "
-            "Add them as:\n\n"
-            "[kite]\napi_key = \"...\"\naccess_token = \"...\""
+            "Google service account JSON not found in secrets.\n\n"
+            "Add it as st.secrets['gcp_service_account'] (the whole JSON dict), "
+            "and share the ZerodhaTokenStore sheet with that service account email."
+        )
+        st.stop()
+    try:
+        client = gspread.service_account_from_dict(sa_info)
+    except Exception as e:
+        st.error(f"Failed to create gspread client from service account: {e}")
+        st.stop()
+    return client
+
+
+def read_zerodha_tokens_from_sheet():
+    """
+    Read API Key, API Secret, Access Token from the Google Sheet 'ZerodhaTokenStore'.
+
+    Expected layout in Sheet1, row 1:
+      A1 = API Key
+      B1 = API Secret
+      C1 = Access Token
+    """
+    gc = get_gspread_client()
+    try:
+        sh = gc.open("ZerodhaTokenStore")
+    except Exception as e:
+        st.error(
+            "Could not open Google Sheet 'ZerodhaTokenStore'. "
+            "Make sure it exists and is shared with the service account.\n\n"
+            f"Details: {e}"
         )
         st.stop()
 
-    kite = KiteConnect(api_key=api_key)
-    kite.set_access_token(access_token)
+    try:
+        ws = sh.sheet1
+        row = ws.row_values(1)
+    except Exception as e:
+        st.error(f"Failed to read row 1 from ZerodhaTokenStore: {e}")
+        st.stop()
+
+    api_key = row[0].strip() if len(row) >= 1 else ""
+    api_secret = row[1].strip() if len(row) >= 2 else ""
+    access_token = row[2].strip() if len(row) >= 3 else ""
+
+    if not api_key or not access_token:
+        st.error(
+            "ZerodhaTokenStore row 1 is missing API Key or Access Token.\n\n"
+            "Expected: A1 = API Key, B1 = API Secret (optional for app), C1 = Access Token."
+        )
+        st.stop()
+
+    return api_key, api_secret, access_token
+
+
+@st.cache_resource(show_spinner=False)
+def get_kite_client() -> KiteConnect:
+    """
+    Create and cache a KiteConnect client using credentials stored in ZerodhaTokenStore sheet.
+    """
+    api_key, api_secret, access_token = read_zerodha_tokens_from_sheet()
+    try:
+        kite = KiteConnect(api_key=api_key)
+        kite.set_access_token(access_token)
+    except Exception as e:
+        st.error(f"Failed to initialize KiteConnect with sheet credentials: {e}")
+        st.stop()
     return kite
 
 
