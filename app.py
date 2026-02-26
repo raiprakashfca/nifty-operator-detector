@@ -1,29 +1,50 @@
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
+
 from kiteconnect import KiteConnect
 import gspread
 import pandas as pd
+
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
+from urllib.parse import urlparse, parse_qs
 
-# --------- PAGE CONFIG ---------
-st.set_page_config(
-    page_title="NIFTY Operator Detector – Audio",
-    layout="wide",
-)
+# =========================
+# PAGE CONFIG
+# =========================
+APP_TITLE = "NIFTY Operator Detector"
+TZ = ZoneInfo("Asia/Kolkata")
 
-# --------- BURST MODE CONFIG ---------
-BURST_REFRESH_SECONDS = 2  # when strong operator footprint is detected
+st.set_page_config(page_title=APP_TITLE, layout="wide")
 
-# --------- HISTORY WINDOW (MINUTES) ---------
-HISTORY_WINDOW_MINUTES = 5  # keep last 5 minutes of ticks
+# =========================
+# DEFAULTS
+# =========================
+DEFAULT_HEAVYWEIGHTS = [
+    "RELIANCE",
+    "HDFCBANK",
+    "ICICIBANK",
+    "INFY",
+    "TCS",
+    "ITC",
+    "LT",
+    "SBIN",
+    "BHARTIARTL",
+    "HINDUNILVR",
+]
 
+NIFTY_INDEX_SYMBOL = "NIFTY 50"  # NSE index symbol on Kite for quote/ohlc
 
-# --------- EMBEDDED BEEP (WAV, BASE64) ---------
-# Short 0.25s beep tone encoded as base64 WAV.
+DEFAULT_HISTORY_WINDOW_MINUTES = 5
+DEFAULT_BASE_REFRESH_SECONDS = 15
+BURST_REFRESH_SECONDS = 2
+
+# =========================
+# AUDIO BEEP (BASE64 WAV)
+# =========================
 BEEP_BASE64 = """
 UklGRkZWAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YSJWAAAAANAzz
-zvHPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zv
+zzvHPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zv
 TPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvP
 PPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7H
 PcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPd
@@ -39,105 +60,67 @@ dM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPP
 Mc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPc
 E80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+
 1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc8
-7zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80
-zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1Tz
-vPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz
-7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvT
-PdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPP
-PMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HP
-cE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM
-+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc87zz7HPcE80zvTPdM+1TzvPPPMc
-87zz7H
+7zz7HPcE80zvTPdM+1TzvPPPMc87zz7H
 """
 
-def play_beep():
-    """Inject a small audio tag to play a beep once."""
-    b64 = "".join(BEEP_BASE64.split())  # remove newlines/spaces
-    audio_html = f"""
-    <audio autoplay>
-        <source src="data:audio/wav;base64,{b64}" type="audio/wav">
-    </audio>
-    """
-    st.markdown(audio_html, unsafe_allow_html=True)
+def _play_beep_once() -> None:
+    b64 = "".join(BEEP_BASE64.split())
+    st.markdown(
+        f"""
+        <audio autoplay>
+            <source src="data:audio/wav;base64,{b64}" type="audio/wav">
+        </audio>
+        """,
+        unsafe_allow_html=True,
+    )
 
+def _beep_on_high_transition(is_high: bool, enabled: bool) -> None:
+    if not enabled:
+        st.session_state["_high_active"] = bool(is_high)
+        return
 
-def trigger_high_divergence_beep(supp_label: str, infl_label: str):
-    """
-    Play beep on transition to HIGH (either suppression or inflation).
-    Uses session_state so you don't get spammed on every refresh while it stays HIGH.
-    """
-    key = "high_divergence_active"
-    prev = st.session_state.get(key, False)
-    current = (supp_label == "HIGH") or (infl_label == "HIGH")
+    prev = bool(st.session_state.get("_high_active", False))
+    if is_high and not prev:
+        _play_beep_once()
+    st.session_state["_high_active"] = bool(is_high)
 
-    if current and not prev:
-        play_beep()  # rising edge: NORMAL/MILD -> HIGH
-
-    st.session_state[key] = current
-
-
-# --------- CONFIG: HEAVYWEIGHTS & INDEX ---------
-HEAVYWEIGHT_SYMBOLS = [
-    "RELIANCE",
-    "HDFCBANK",
-    "ICICIBANK",
-    "INFY",
-    "TCS",
-    "ITC",
-    "LT",
-    "SBIN",
-    "BHARTIARTL",
-    "HINDUNILVR",
-]
-
-NIFTY_INDEX_SYMBOL = "NIFTY 50"   # NSE index
-
-
-# --------- KITE CLIENT HELPERS (FROM ZERODHATOKENSTORE) ---------
+# =========================
+# GOOGLE SHEETS (TOKEN STORE)
+# =========================
 @st.cache_resource(show_spinner=False)
-def get_gspread_client():
-    """
-    Create a gspread client from service account JSON in st.secrets["gcp_service_account"].
-    """
+def _get_gspread_client():
     try:
         sa_info = st.secrets["gcp_service_account"]
     except Exception:
         st.error(
-            "Google service account JSON not found in secrets.\n\n"
-            "Add it as st.secrets['gcp_service_account'] (the whole JSON dict), "
-            "and share the ZerodhaTokenStore sheet with that service account email."
+            "Missing Google service account JSON in Streamlit secrets.\n\n"
+            "Add it as st.secrets['gcp_service_account'] (full JSON dict) and share "
+            "the ZerodhaTokenStore sheet with the service account email."
         )
         st.stop()
+
     try:
-        client = gspread.service_account_from_dict(sa_info)
+        return gspread.service_account_from_dict(sa_info)
     except Exception as e:
-        st.error(f"Failed to create gspread client from service account: {e}")
+        st.error(f"Failed to init gspread client: {e}")
         st.stop()
-    return client
 
-
-def read_zerodha_tokens_from_sheet():
-    """
-    Read API Key, API Secret, Access Token from the Google Sheet 'ZerodhaTokenStore'.
-
-    Expected layout in Sheet1, row 1:
-      A1 = API Key
-      B1 = API Secret
-      C1 = Access Token
-    """
-    gc = get_gspread_client()
+def _open_token_sheet():
+    gc = _get_gspread_client()
     try:
         sh = gc.open("ZerodhaTokenStore")
+        return sh.sheet1
     except Exception as e:
         st.error(
-            "Could not open Google Sheet 'ZerodhaTokenStore'. "
-            "Make sure it exists and is shared with the service account.\n\n"
+            "Could not open Google Sheet 'ZerodhaTokenStore'. Ensure it exists and is shared.\n\n"
             f"Details: {e}"
         )
         st.stop()
 
+def read_zerodha_tokens_from_sheet():
+    """Expected layout in Sheet1 row 1: A1=API Key, B1=API Secret, C1=Access Token."""
+    ws = _open_token_sheet()
     try:
-        ws = sh.sheet1
         row = ws.row_values(1)
     except Exception as e:
         st.error(f"Failed to read row 1 from ZerodhaTokenStore: {e}")
@@ -146,44 +129,117 @@ def read_zerodha_tokens_from_sheet():
     api_key = row[0].strip() if len(row) >= 1 else ""
     api_secret = row[1].strip() if len(row) >= 2 else ""
     access_token = row[2].strip() if len(row) >= 3 else ""
+    return api_key, api_secret, access_token
 
-    if not api_key or not access_token:
-        st.error(
-            "ZerodhaTokenStore row 1 is missing API Key or Access Token.\n\n"
-            "Expected: A1 = API Key, B1 = API Secret (optional for app), C1 = Access Token."
-        )
+def write_access_token_to_sheet(access_token: str) -> None:
+    ws = _open_token_sheet()
+    try:
+        ws.update("C1", access_token)
+    except Exception as e:
+        st.error(f"Failed to write access token to ZerodhaTokenStore!C1: {e}")
         st.stop()
+
+# =========================
+# KITE AUTH (STREAMLIT-FRIENDLY)
+# =========================
+def _extract_request_token(pasted_url: str) -> str | None:
+    if not pasted_url:
+        return None
+    try:
+        parsed = urlparse(pasted_url.strip())
+        qs = parse_qs(parsed.query)
+        tok = (qs.get("request_token") or [None])[0]
+        return tok
+    except Exception:
+        return None
+
+def _auth_sidebar() -> tuple[str, str, str]:
+    """Returns (api_key, api_secret, access_token). Also handles refresh flow."""
+    st.sidebar.header("🔐 Zerodha Login")
+
+    api_key, api_secret, access_token = read_zerodha_tokens_from_sheet()
+
+    if not api_key:
+        st.sidebar.error("API Key missing in ZerodhaTokenStore!A1")
+        st.stop()
+
+    kite = KiteConnect(api_key=api_key)
+    login_url = kite.login_url()
+
+    with st.sidebar.expander("Daily token refresh", expanded=False):
+        st.markdown(
+            "**How it works:** Click login → Zerodha redirects to your redirect URL with a `request_token`. "
+            "Paste the redirected URL below to generate a fresh `access_token` and store it in Google Sheets."
+        )
+        st.link_button("Open Zerodha Login", login_url)
+
+        pasted = st.text_input(
+            "Paste redirected URL (contains request_token)",
+            placeholder="https://your-redirect-uri?request_token=...",
+            help="After login, copy the full redirected URL from the browser address bar and paste it here.",
+        )
+        req_tok = _extract_request_token(pasted)
+
+        c1, c2 = st.columns(2)
+        with c1:
+            do_gen = st.button("Generate new access token", use_container_width=True, type="primary")
+        with c2:
+            do_clear = st.button("Clear caches", use_container_width=True)
+
+        if do_clear:
+            st.cache_data.clear()
+            st.cache_resource.clear()
+            st.sidebar.success("Caches cleared.")
+
+        if do_gen:
+            if not api_secret:
+                st.sidebar.error("API Secret missing in ZerodhaTokenStore!B1")
+                st.stop()
+            if not req_tok:
+                st.sidebar.error("No request_token found in the pasted URL.")
+                st.stop()
+
+            try:
+                sess = kite.generate_session(req_tok, api_secret=api_secret)
+                new_access = sess.get("access_token")
+            except Exception as e:
+                st.sidebar.error(f"Token generation failed: {e}")
+                st.stop()
+
+            if not new_access:
+                st.sidebar.error("No access_token returned by Zerodha.")
+                st.stop()
+
+            write_access_token_to_sheet(new_access)
+
+            st.session_state["_forced_access_token"] = new_access
+            st.cache_data.clear()
+            st.cache_resource.clear()
+            st.sidebar.success("Access token updated in ZerodhaTokenStore!C1")
+            st.rerun()
+
+    access_token = st.session_state.get("_forced_access_token", access_token)
+
+    if not access_token:
+        st.sidebar.warning("Access token missing in ZerodhaTokenStore!C1 → refresh token.")
 
     return api_key, api_secret, access_token
 
-
 @st.cache_resource(show_spinner=False)
-def get_kite_client() -> KiteConnect:
-    """
-    Create and cache a KiteConnect client using credentials stored in ZerodhaTokenStore sheet.
-    """
-    api_key, api_secret, access_token = read_zerodha_tokens_from_sheet()
-    try:
-        kite = KiteConnect(api_key=api_key)
+def get_kite_client(api_key: str, access_token: str) -> KiteConnect:
+    kite = KiteConnect(api_key=api_key)
+    if access_token:
         kite.set_access_token(access_token)
-    except Exception as e:
-        st.error(f"Failed to initialize KiteConnect with sheet credentials: {e}")
-        st.stop()
     return kite
 
-
+# =========================
+# MARKET DATA
+# =========================
 @st.cache_data(show_spinner=False, ttl=3600)
-def get_nifty_option_instruments() -> pd.DataFrame:
-    """
-    Fetch and cache NIFTY option instruments from NFO for 1 hour.
-    """
-    kite = get_kite_client()
-    try:
-        instruments = kite.instruments("NFO")
-    except Exception as e:
-        st.error(f"Error fetching NFO instruments from Kite: {e}")
-        return pd.DataFrame()
-
+def get_nifty_option_instruments(kite_api_key: str, kite_access_token: str) -> pd.DataFrame:
+    """Cache NIFTY options instrument list for 1 hour."""
+    kite = get_kite_client(kite_api_key, kite_access_token)
+    instruments = kite.instruments("NFO")
     df = pd.DataFrame(instruments)
     if df.empty:
         return df
@@ -194,84 +250,33 @@ def get_nifty_option_instruments() -> pd.DataFrame:
         & (df["name"] == "NIFTY")
     ].copy()
 
-    if df.empty:
-        return df
-
     df["expiry"] = pd.to_datetime(df["expiry"]).dt.date
     df["strike"] = df["strike"].astype(float)
     return df
 
-
-def build_instrument_list():
-    """Build the list of instruments to query via ohlc()."""
-    instruments = [f"NSE:{sym}" for sym in HEAVYWEIGHT_SYMBOLS]
+def build_instrument_list(heavyweights: list[str]) -> list[str]:
+    instruments = [f"NSE:{sym}" for sym in heavyweights]
     instruments.append(f"NSE:{NIFTY_INDEX_SYMBOL}")
     return instruments
 
-
-def ensure_nifty_change(df: pd.DataFrame, kite: KiteConnect) -> pd.DataFrame:
-    """
-    If NIFTY % Change is missing, try a fallback quote() call to compute it.
-    Silent if it fails; we just keep %Change as NaN.
-    """
-    if df is None or df.empty:
-        return df
-
-    mask = df["Symbol"].eq(NIFTY_INDEX_SYMBOL)
-    if not mask.any():
-        return df
-
-    idx = df[mask].index[0]
-    pct = df.at[idx, "% Change"]
-
-    if pd.isna(pct):
-        try:
-            q = kite.quote([f"NSE:{NIFTY_INDEX_SYMBOL}"])
-            data = list(q.values())[0]
-            last_price = data.get("last_price")
-            ohlc = data.get("ohlc", {}) or {}
-            close = ohlc.get("close")
-
-            if last_price is not None and close not in (None, 0):
-                df.at[idx, "LTP"] = last_price
-                df.at[idx, "Prev Close"] = close
-                df.at[idx, "% Change"] = ((last_price - close) / close) * 100.0
-        except Exception:
-            pass  # stay quiet
-
-    return df
-
-
-def fetch_ltp_snapshot(kite: KiteConnect) -> pd.DataFrame:
-    """
-    Fetch LTP + previous close for NIFTY and heavyweights using kite.ohlc().
-    """
-    instruments = build_instrument_list()
-
-    try:
-        ohlc_data = kite.ohlc(instruments)
-    except Exception as e:
-        st.error(f"Error fetching OHLC data from Kite: {e}")
-        return pd.DataFrame()
+def fetch_ltp_snapshot(kite: KiteConnect, heavyweights: list[str]) -> pd.DataFrame:
+    """One OHLC call for NIFTY + heavyweights."""
+    instruments = build_instrument_list(heavyweights)
+    ohlc_data = kite.ohlc(instruments)
+    now = datetime.now(TZ)
 
     rows = []
-    now = datetime.now(ZoneInfo("Asia/Kolkata"))
-
     for instrument in instruments:
         data = ohlc_data.get(instrument, {}) or {}
-        try:
-            _, symbol = instrument.split(":", 1)
-        except ValueError:
-            symbol = instrument
+        _, symbol = instrument.split(":", 1)
 
         last_price = data.get("last_price")
         ohlc = data.get("ohlc", {}) or {}
         prev_close = ohlc.get("close")
 
+        pct_change = None
         if last_price is not None and prev_close not in (None, 0):
             pct_change = ((last_price - prev_close) / prev_close) * 100.0
-        else:
-            pct_change = None
 
         rows.append(
             {
@@ -287,28 +292,15 @@ def fetch_ltp_snapshot(kite: KiteConnect) -> pd.DataFrame:
     if df.empty:
         return df
 
-    df = ensure_nifty_change(df, kite)
-
-    df["is_nifty"] = df["Symbol"].eq(NIFTY_INDEX_SYMBOL)
-    df = df.sort_values(
-        by=["is_nifty", "% Change"],
-        ascending=[False, False],
-        ignore_index=True,
-    ).drop(columns=["is_nifty"])
-
+    df["_is_nifty"] = df["Symbol"].eq(NIFTY_INDEX_SYMBOL)
+    df = df.sort_values(by=["_is_nifty", "% Change"], ascending=[False, False]).drop(columns=["_is_nifty"])
+    df = df.reset_index(drop=True)
     return df
 
-
-# --------- SUPPRESSION / INFLATION LOGIC (NIFTY-based) ---------
+# =========================
+# MODEL (SUPPRESSION / INFLATION)
+# =========================
 def compute_suppression_stats(df: pd.DataFrame):
-    """
-    Compute (NIFTY-based):
-      - Nifty % change
-      - Avg heavyweights % change
-      - Divergence (heavy - Nifty)
-      - Suppression label
-      - Inflation label
-    """
     if df is None or df.empty:
         return None
 
@@ -316,248 +308,256 @@ def compute_suppression_stats(df: pd.DataFrame):
     if nifty_rows.empty:
         return None
 
-    nifty_row = nifty_rows.iloc[0]
-
-    # heavyweights: everything except NIFTY
+    nifty_change = nifty_rows.iloc[0]["% Change"]
     heavy_df = df[df["Symbol"] != NIFTY_INDEX_SYMBOL]
     if heavy_df.empty:
         return None
 
-    nifty_change = nifty_row["% Change"]
     avg_heavy_change = heavy_df["% Change"].mean()
-
     if pd.isna(nifty_change) or pd.isna(avg_heavy_change):
         return None
 
-    divergence = avg_heavy_change - nifty_change
+    divergence = float(avg_heavy_change - nifty_change)
 
     suppression_label = "NORMAL"
-    suppression_explanation = "No strong suppression detected."
     inflation_label = "NORMAL"
-    inflation_explanation = "No strong inflation detected."
 
     abs_div = abs(divergence)
 
-    # Suppression: NIFTY mildly down, heavyweights materially weaker
-    if (
-        nifty_change <= -0.20
-        and nifty_change >= -1.50
-        and divergence <= -0.30
-    ):
-        if abs_div >= 1.0:
-            suppression_label = "HIGH"
-            suppression_explanation = (
-                "Heavyweights much weaker than NIFTY – strong suppression risk."
-            )
-        else:
-            suppression_label = "MILD"
-            suppression_explanation = (
-                "Heavyweights weaker than NIFTY – some suppression."
-            )
+    if nifty_change <= -0.20 and nifty_change >= -1.50 and divergence <= -0.30:
+        suppression_label = "HIGH" if abs_div >= 1.0 else "MILD"
 
-    # Inflation: NIFTY mildly up, heavyweights materially stronger
-    if (
-        nifty_change >= 0.20
-        and nifty_change <= 1.50
-        and divergence >= 0.30
-    ):
-        if abs_div >= 1.0:
-            inflation_label = "HIGH"
-            inflation_explanation = (
-                "Heavyweights much stronger than NIFTY – strong inflation risk."
-            )
-        else:
-            inflation_label = "MILD"
-            inflation_explanation = (
-                "Heavyweights stronger than NIFTY – some inflation."
-            )
+    if nifty_change >= 0.20 and nifty_change <= 1.50 and divergence >= 0.30:
+        inflation_label = "HIGH" if abs_div >= 1.0 else "MILD"
 
     return {
         "nifty_change": float(nifty_change),
         "avg_heavy_change": float(avg_heavy_change),
         "divergence": float(divergence),
         "supp_label": suppression_label,
-        "supp_expl": suppression_explanation,
         "infl_label": inflation_label,
-        "infl_expl": inflation_explanation,
     }
 
-
-# --------- DEEP ITM (>=100pts) OPTION FINDERS & QUOTES ---------
-def find_itm_near_spot_instrument(
-    nifty_opt_df: pd.DataFrame, nifty_spot: float, option_type: str
-):
-    """
-    Find ITM option at least 100 points in-the-money, closest to SPOT:
-
-      - For CE: strike <= spot - 100 (deep ITM), choose closest to spot.
-      - For PE: strike >= spot + 100 (deep ITM), choose closest to spot.
-
-    If no such deep ITM exists:
-      1) Fall back to strict ITM by spot (CE: strike < spot, PE: strike > spot).
-      2) If even that is empty, fall back to nearest strike overall (incl. ATM).
-    """
-    if nifty_opt_df is None or nifty_opt_df.empty:
-        return None
-    if nifty_spot is None or pd.isna(nifty_spot):
+# =========================
+# DEEP ITM OPTION PICK + SINGLE QUOTE (CE+PE together)
+# =========================
+def find_itm_near_spot_instrument(nifty_opt_df: pd.DataFrame, nifty_spot: float, option_type: str):
+    if nifty_opt_df is None or nifty_opt_df.empty or nifty_spot is None or pd.isna(nifty_spot):
         return None
 
-    option_type = option_type.upper()
+    option_type = option_type.upper().strip()
     if option_type not in ("CE", "PE"):
         return None
 
     today = date.today()
-
-    df = nifty_opt_df[
-        (nifty_opt_df["instrument_type"] == option_type)
-        & (nifty_opt_df["expiry"] >= today)
-    ].copy()
+    df = nifty_opt_df[(nifty_opt_df["instrument_type"] == option_type) & (nifty_opt_df["expiry"] >= today)].copy()
     if df.empty:
         return None
 
-    # Step 1: Deep ITM (>= 100 points)
     if option_type == "CE":
-        df_deep_itm = df[df["strike"] <= (nifty_spot - 100)].copy()
-    else:  # PE
-        df_deep_itm = df[df["strike"] >= (nifty_spot + 100)].copy()
-
-    if not df_deep_itm.empty:
-        df_deep_itm["spot_diff"] = (df_deep_itm["strike"] - nifty_spot).abs()
-        df_sel = df_deep_itm
+        df1 = df[df["strike"] <= (nifty_spot - 100)].copy()
     else:
-        # Step 2: strict ITM (no 100pt buffer, but still not ATM)
+        df1 = df[df["strike"] >= (nifty_spot + 100)].copy()
+
+    if df1.empty:
         if option_type == "CE":
-            df_itm = df[df["strike"] < nifty_spot].copy()
-        else:  # PE
-            df_itm = df[df["strike"] > nifty_spot].copy()
-
-        if not df_itm.empty:
-            df_itm["spot_diff"] = (df_itm["strike"] - nifty_spot).abs()
-            df_sel = df_itm
+            df1 = df[df["strike"] < nifty_spot].copy()
         else:
-            # Step 3: fallback – nearest to spot including ATM
-            df["spot_diff"] = (df["strike"] - nifty_spot).abs()
-            df_sel = df
+            df1 = df[df["strike"] > nifty_spot].copy()
 
-    df_sel = df_sel.sort_values(["spot_diff", "expiry"])
-    return df_sel.iloc[0]
+    if df1.empty:
+        df1 = df.copy()
 
+    df1["spot_diff"] = (df1["strike"] - nifty_spot).abs()
+    df1 = df1.sort_values(["spot_diff", "expiry"], ascending=[True, True])
+    return df1.iloc[0]
 
-def fetch_itm_option_quote(
-    kite: KiteConnect, nifty_opt_df: pd.DataFrame, nifty_spot: float, option_type: str
-):
-    """
-    Find deep-ITM-near-spot option (CE or PE) and fetch:
-      - LTP, % change, prev close
-      - cumulative volume
-      - last traded quantity (LTQ)
-    Uses kite.quote() so we also get volume and LTQ.
-    """
-    row = find_itm_near_spot_instrument(nifty_opt_df, nifty_spot, option_type)
-    if row is None:
-        return None
+def quote_deep_itm_pair(kite: KiteConnect, nifty_opt_df: pd.DataFrame, nifty_spot: float):
+    """Returns (ce_info, pe_info). Uses a SINGLE kite.quote([CE, PE]) call incl. depth."""
+    ce_row = find_itm_near_spot_instrument(nifty_opt_df, nifty_spot, "CE")
+    pe_row = find_itm_near_spot_instrument(nifty_opt_df, nifty_spot, "PE")
 
-    tradingsymbol = row["tradingsymbol"]
-    strike = row["strike"]
-    expiry = row["expiry"]
-    instrument = f"NFO:{tradingsymbol}"
+    if ce_row is None and pe_row is None:
+        return None, None
 
-    try:
-        q = kite.quote([instrument])
-    except Exception as e:
-        st.error(f"Error fetching ITM {option_type} quote from Kite: {e}")
-        return None
+    instruments = []
+    if ce_row is not None:
+        instruments.append(f"NFO:{ce_row['tradingsymbol']}")
+    if pe_row is not None:
+        instruments.append(f"NFO:{pe_row['tradingsymbol']}")
 
-    if not q:
-        return None
+    q = kite.quote(instruments)
 
-    data = list(q.values())[0]
-    last_price = data.get("last_price")
-    last_qty = data.get("last_quantity")  # LTQ
-    ohlc = data.get("ohlc", {}) or {}
-    prev_close = ohlc.get("close")
+    def _build(row, instrument):
+        data = q.get(instrument, {}) or {}
+        last_price = data.get("last_price")
+        last_qty = data.get("last_quantity")
+        ohlc = data.get("ohlc", {}) or {}
+        prev_close = ohlc.get("close")
+        volume_total = data.get("volume_traded") or data.get("volume")
 
-    # volume key is 'volume_traded'; also try 'volume'
-    volume_total = data.get("volume_traded")
-    if volume_total is None:
-        volume_total = data.get("volume")
-
-    if last_price is not None and prev_close not in (None, 0):
-        pct_change = ((last_price - prev_close) / prev_close) * 100.0
-    else:
         pct_change = None
+        if last_price is not None and prev_close not in (None, 0):
+            pct_change = ((last_price - prev_close) / prev_close) * 100.0
 
-    return {
-        "tradingsymbol": tradingsymbol,
-        "strike": float(strike),
-        "expiry": expiry,
-        "ltp": last_price,
-        "last_quantity": last_qty,
-        "prev_close": prev_close,
-        "pct_change": pct_change,
-        "instrument": instrument,
-        "option_type": option_type.upper(),
-        "volume_total": volume_total,
+        depth = data.get("depth", {}) or {}
+        buys = depth.get("buy", []) or []
+        sells = depth.get("sell", []) or []
+
+        bid_qty = sum(l.get("quantity", 0) for l in buys)
+        ask_qty = sum(l.get("quantity", 0) for l in sells)
+        ratio = (bid_qty / ask_qty) if ask_qty > 0 else (float("inf") if bid_qty > 0 else 0.0)
+
+        if ratio >= 2.0 and bid_qty > 0:
+            fp = "STRONG"
+        elif ratio >= 1.2 and bid_qty > 0:
+            fp = "MILD"
+        else:
+            fp = "NONE"
+
+        return {
+            "tradingsymbol": row["tradingsymbol"],
+            "strike": float(row["strike"]),
+            "expiry": row["expiry"],
+            "instrument": instrument,
+            "ltp": last_price,
+            "last_quantity": last_qty,
+            "prev_close": prev_close,
+            "pct_change": pct_change,
+            "volume_total": volume_total,
+            "depth": {
+                "bid_qty": bid_qty,
+                "ask_qty": ask_qty,
+                "bid_ask_ratio": ratio,
+                "top_bid": buys[0].get("price") if buys else None,
+                "top_ask": sells[0].get("price") if sells else None,
+                "footprint": fp,
+            },
+        }
+
+    ce_info = _build(ce_row, f"NFO:{ce_row['tradingsymbol']}") if ce_row is not None else None
+    pe_info = _build(pe_row, f"NFO:{pe_row['tradingsymbol']}") if pe_row is not None else None
+    return ce_info, pe_info
+
+# =========================
+# DIVERGENCE CLASSIFIERS (HEURISTICS)
+# =========================
+def classify_ce_divergence(ce_chg, nifty_change) -> str:
+    if ce_chg is None or pd.isna(ce_chg) or nifty_change is None or pd.isna(nifty_change):
+        return "neutral"
+
+    ce = float(ce_chg)
+    nf = float(nifty_change)
+
+    if nf <= -0.20:
+        if ce >= 0.0:
+            return "strong"
+        if ce > nf + 3.0:
+            return "mild"
+
+    return "neutral"
+
+def classify_pe_divergence(pe_chg, nifty_change) -> str:
+    if pe_chg is None or pd.isna(pe_chg) or nifty_change is None or pd.isna(nifty_change):
+        return "neutral"
+
+    pe = float(pe_chg)
+    nf = float(nifty_change)
+
+    if nf >= 0.20:
+        if pe >= 0.0:
+            return "strong"
+        if pe > -3.0:
+            return "mild"
+
+    return "neutral"
+
+# =========================
+# RECENT VOLUME (CUMULATIVE DELTA -> 15s estimate)
+# =========================
+def compute_recent_volume_15s(instrument: str, current_volume):
+    now = datetime.now(TZ)
+
+    if current_volume is None or pd.isna(current_volume):
+        st.session_state[f"_vol_{instrument}"] = (None, now)
+        return None
+
+    last = st.session_state.get(f"_vol_{instrument}")
+    st.session_state[f"_vol_{instrument}"] = (current_volume, now)
+
+    if not last:
+        return None
+
+    last_vol, last_ts = last
+    if last_vol is None or last_ts is None:
+        return None
+
+    delta = current_volume - last_vol
+    if delta <= 0:
+        return None
+
+    elapsed = (now - last_ts).total_seconds()
+    if elapsed <= 0:
+        return None
+
+    return max(delta * (15.0 / elapsed), 0.0)
+
+# =========================
+# HISTORY (IN-MEM)
+# =========================
+def update_history(history_window_minutes: int, df: pd.DataFrame, stats: dict | None, ce: dict | None, pe: dict | None):
+    if df is None or df.empty:
+        return
+
+    nifty_rows = df[df["Symbol"] == NIFTY_INDEX_SYMBOL]
+    if nifty_rows.empty:
+        return
+
+    nifty_row = nifty_rows.iloc[0]
+    ts: datetime = nifty_row["Timestamp"]
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=TZ)
+
+    record = {
+        "_ts": ts,
+        "Time": ts.astimezone(TZ).strftime("%H:%M:%S"),
+        "NIFTY %": nifty_row["% Change"],
+        "Supp": (stats or {}).get("supp_label"),
+        "Infl": (stats or {}).get("infl_label"),
+        "CE Strike": int(ce["strike"]) if ce else None,
+        "CE %": ce.get("pct_change") if ce else None,
+        "CE FP": (ce.get("depth") or {}).get("footprint") if ce else None,
+        "PE Strike": int(pe["strike"]) if pe else None,
+        "PE %": pe.get("pct_change") if pe else None,
+        "PE FP": (pe.get("depth") or {}).get("footprint") if pe else None,
     }
 
+    hist = st.session_state.get("operator_history", [])
+    hist.append(record)
 
-# --------- ORDER BOOK / DEPTH LOGIC ---------
-def fetch_orderbook_for_option(kite: KiteConnect, opt_info: dict):
-    """Fetch depth for an option and compute bid/ask dominance."""
-    if opt_info is None:
-        return None
+    cutoff = ts - timedelta(minutes=history_window_minutes)
+    hist = [r for r in hist if r.get("_ts") and r["_ts"] >= cutoff]
+    st.session_state["operator_history"] = hist
 
-    instrument = opt_info.get("instrument")
-    if not instrument:
-        return None
+def render_history(history_window_minutes: int):
+    st.subheader(f"⏱ Last {history_window_minutes} minutes")
+    hist = st.session_state.get("operator_history", [])
+    if not hist:
+        st.info("History will populate as the app refreshes.")
+        return
 
-    try:
-        q = kite.quote([instrument])
-    except Exception as e:
-        st.error(f"Error fetching order book from Kite: {e}")
-        return None
+    dfh = pd.DataFrame(hist).drop(columns=["_ts"], errors="ignore")
 
-    if not q:
-        return None
+    for c in ["NIFTY %", "CE %", "PE %"]:
+        if c in dfh.columns:
+            dfh[c] = dfh[c].apply(lambda x: "-" if x is None or pd.isna(x) else f"{float(x):.2f}%")
 
-    data = list(q.values())[0]
-    depth = data.get("depth", {}) or {}
-    buy_levels = depth.get("buy", []) or []
-    sell_levels = depth.get("sell", []) or []
+    st.dataframe(dfh, use_container_width=True, hide_index=True)
+    st.caption("Session-only memory; resets if Streamlit restarts.")
 
-    total_bid_qty = sum(level.get("quantity", 0) for level in buy_levels)
-    total_ask_qty = sum(level.get("quantity", 0) for level in sell_levels)
-
-    top_bid_price = buy_levels[0]["price"] if buy_levels else None
-    top_ask_price = sell_levels[0]["price"] if sell_levels else None
-
-    if total_ask_qty <= 0:
-        bid_dom_ratio = float("inf") if total_bid_qty > 0 else 0.0
-    else:
-        bid_dom_ratio = total_bid_qty / total_ask_qty
-
-    if bid_dom_ratio >= 2.0 and total_bid_qty > 0:
-        footprint = "STRONG"
-        desc = "Bid side heavily stacked vs ask."
-    elif bid_dom_ratio >= 1.2 and total_bid_qty > 0:
-        footprint = "MILD"
-        desc = "Bid side mildly dominant."
-    else:
-        footprint = "NONE"
-        desc = "No clear bid dominance."
-
-    return {
-        "total_bid_qty": total_bid_qty,
-        "total_ask_qty": total_ask_qty,
-        "top_bid_price": top_bid_price,
-        "top_ask_price": top_ask_price,
-        "bid_dom_ratio": bid_dom_ratio,
-        "footprint": footprint,
-        "description": desc,
-    }
-
-
-# --------- SMALL FORMAT HELPERS ---------
+# =========================
+# UI HELPERS
+# =========================
 def _fmt_price(x):
     if x is None or pd.isna(x):
         return "-"
@@ -565,7 +565,6 @@ def _fmt_price(x):
         return f"{float(x):.2f}"
     except Exception:
         return "-"
-
 
 def _fmt_pct(x):
     if x is None or pd.isna(x):
@@ -575,643 +574,256 @@ def _fmt_pct(x):
     except Exception:
         return "-"
 
-
 def _fmt_int(x):
     if x is None or pd.isna(x):
         return "-"
     try:
-        return f"{int(x)}"
+        return f"{int(float(x))}"
     except Exception:
         return "-"
 
-
-# --------- DIVERGENCE CLASSIFIERS ---------
-def classify_ce_divergence(ce_chg, nifty_change) -> str:
-    """Return 'strong', 'mild', or 'neutral' for CE divergence."""
-    if ce_chg is None or pd.isna(ce_chg):
-        return "neutral"
-    if nifty_change is None or pd.isna(nifty_change):
-        return "neutral"
-
-    ce = float(ce_chg)
-    nf = float(nifty_change)
-
-    if nf <= -0.20:  # Nifty weak
-        if ce >= 0.0:
-            return "strong"
-        elif ce > nf + 3.0:
-            return "mild"
-    return "neutral"
-
-
-def classify_pe_divergence(pe_chg, nifty_change) -> str:
-    """Return 'strong', 'mild', or 'neutral' for PE divergence."""
-    if pe_chg is None or pd.isna(pe_chg):
-        return "neutral"
-    if nifty_change is None or pd.isna(nifty_change):
-        return "neutral"
-
-    pe = float(pe_chg)
-    nf = float(nifty_change)
-
-    if nf >= 0.20:  # Nifty strong
-        if pe >= 0.0:
-            return "strong"
-        elif pe > -3.0:
-            return "mild"
-    return "neutral"
-
-
-# --------- RECENT VOLUME (15s ESTIMATE) ---------
-def compute_recent_volume_15s(instrument: str, current_volume):
-    """
-    Approximate volume in last 15 seconds using cumulative volume deltas.
-
-    - Stores (volume, timestamp) per instrument in st.session_state.
-    - On each refresh, compute delta + elapsed seconds.
-    - Scale delta to a 15-second equivalent: delta * (15 / elapsed).
-    """
-    now = datetime.now(ZoneInfo("Asia/Kolkata"))
-
-    if current_volume is None or pd.isna(current_volume):
-        st.session_state[f"vol_state_{instrument}"] = (None, now)
-        return None
-
-    key = f"vol_state_{instrument}"
-    last = st.session_state.get(key)
-
-    if last is None:
-        st.session_state[key] = (current_volume, now)
-        return None
-
-    last_vol, last_time = last
-    st.session_state[key] = (current_volume, now)
-
-    if last_vol is None or last_time is None:
-        return None
-
-    delta = current_volume - last_vol
-    if delta <= 0:
-        return None
-
-    elapsed = (now - last_time).total_seconds()
-    if elapsed <= 0:
-        return None
-
-    est_15s = delta * (15.0 / elapsed)
-    return max(est_15s, 0.0)
-
-
-# --------- HISTORY TRACKING (LAST 5 MINUTES) ---------
-def update_history(
-    df: pd.DataFrame,
-    stats: dict | None,
-    itm_ce_info: dict | None,
-    ce_div_level: str | None,
-    ob_ce_info: dict | None,
-    itm_pe_info: dict | None,
-    pe_div_level: str | None,
-    ob_pe_info: dict | None,
-):
-    """
-    Store last HISTORY_WINDOW_MINUTES of snapshots in st.session_state["operator_history"].
-    """
-    if df is None or df.empty:
-        return
-
-    nifty_rows = df[df["Symbol"] == NIFTY_INDEX_SYMBOL]
-    if nifty_rows.empty:
-        return
-
-    nifty_row = nifty_rows.iloc[0]
-    nifty_pct = nifty_row["% Change"]
-    ts = nifty_row["Timestamp"]
-
-    # Ensure ts is aware in IST
-    if isinstance(ts, datetime):
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
-        ts_ist = ts.astimezone(ZoneInfo("Asia/Kolkata"))
-    else:
-        ts_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
-
-    ts_str = ts_ist.strftime("%H:%M:%S")
-
-    record = {
-        "_ts": ts_ist,  # raw datetime for pruning
-        "Time": ts_str,
-        "NIFTY %": None if pd.isna(nifty_pct) else float(nifty_pct),
-        "Supp": stats.get("supp_label") if stats else None,
-        "Infl": stats.get("infl_label") if stats else None,
-    }
-
-    # CE side
-    if itm_ce_info is not None:
-        record["CE Strike"] = int(itm_ce_info["strike"])
-        ce_pct = itm_ce_info.get("pct_change")
-        record["CE %"] = None if ce_pct is None or pd.isna(ce_pct) else float(ce_pct)
-        record["CE Divergence"] = ce_div_level
-        record["CE Footprint"] = (ob_ce_info or {}).get("footprint")
-    else:
-        record["CE Strike"] = None
-        record["CE %"] = None
-        record["CE Divergence"] = None
-        record["CE Footprint"] = None
-
-    # PE side
-    if itm_pe_info is not None:
-        record["PE Strike"] = int(itm_pe_info["strike"])
-        pe_pct = itm_pe_info.get("pct_change")
-        record["PE %"] = None if pe_pct is None or pd.isna(pe_pct) else float(pe_pct)
-        record["PE Divergence"] = pe_div_level
-        record["PE Footprint"] = (ob_pe_info or {}).get("footprint")
-    else:
-        record["PE Strike"] = None
-        record["PE %"] = None
-        record["PE Divergence"] = None
-        record["PE Footprint"] = None
-
-    history = st.session_state.get("operator_history", [])
-    history.append(record)
-
-    # Keep only last HISTORY_WINDOW_MINUTES
-    cutoff = ts_ist - timedelta(minutes=HISTORY_WINDOW_MINUTES)
-    history = [r for r in history if r.get("_ts") and r["_ts"] >= cutoff]
-
-    st.session_state["operator_history"] = history
-
-
-def layout_history_section():
-    st.subheader("⏱ Last 5 Minutes (In-Memory)")
-    history = st.session_state.get("operator_history", [])
-
-    if not history:
-        st.info("History will build up as ticks come in.")
-        return
-
-    df_hist = pd.DataFrame(history)
-
-    # Drop internal timestamp column
-    if "_ts" in df_hist.columns:
-        df_hist = df_hist.drop(columns=["_ts"])
-
-    # Pretty formatting for % columns
-    for col in ["NIFTY %", "CE %", "PE %"]:
-        if col in df_hist.columns:
-            df_hist[col] = df_hist[col].apply(
-                lambda x: "-" if x is None else f"{x:.2f}%"
-            )
-
-    st.dataframe(
-        df_hist[
-            [
-                "Time",
-                "NIFTY %",
-                "Supp",
-                "Infl",
-                "CE Strike",
-                "CE %",
-                "CE Divergence",
-                "CE Footprint",
-                "PE Strike",
-                "PE %",
-                "PE Divergence",
-                "PE Footprint",
-            ]
-        ],
-        hide_index=True,
-        use_container_width=True,
-    )
+def render_header():
+    st.title(f"{APP_TITLE} 🧲")
     st.caption(
-        f"Window: last {HISTORY_WINDOW_MINUTES} minutes (session memory only; "
-        "resets if the app/session reloads)."
+        "Detects divergence between NIFTY and heavyweights + deep ITM CE/PE footprints. "
+        "Token refresh is integrated in the sidebar."
     )
 
-
-# --------- LAYOUT HELPERS ---------
-def layout_header():
-    st.title("NIFTY Operator Detector – Burst Mode + Audio")
-    st.caption(
-        "NIFTY vs heavyweights (NSE) + ≥100-pt ITM CE/PE + LTP/LTQ + order book + est. 15s volume.\n"
-        "Audio alert on HIGH divergence. CE and PE visible together. "
-        "Burst Mode speeds up refresh on strong footprints."
-    )
-
-
-def layout_suppression_section(df: pd.DataFrame):
-    stats = compute_suppression_stats(df)
-    st.subheader("🧲 NIFTY vs Heavyweights")
-
-    if stats is None:
-        st.info("Not enough clean data yet for suppression/inflation.")
-        return stats
-
-    nifty_chg = stats["nifty_change"]
-    heavy_chg = stats["avg_heavy_change"]
-    divergence = stats["divergence"]
-    supp_label = stats["supp_label"]
-    supp_expl = stats["supp_expl"]
-    infl_label = stats["infl_label"]
-    infl_expl = stats["infl_expl"]
-
-    # Trigger audio if we just flipped to HIGH
-    trigger_high_divergence_beep(supp_label, infl_label)
-
-    col1, col2, col3 = st.columns(3)
-    col1.metric("NIFTY %", _fmt_pct(nifty_chg))
-    col2.metric("Avg Heavyweights %", _fmt_pct(heavy_chg))
-    col3.metric("Heavy - NIFTY", _fmt_pct(divergence))
-
-    if supp_label == "HIGH":
-        st.error(f"Suppression: HIGH – {supp_expl}")
-    elif supp_label == "MILD":
-        st.warning(f"Suppression: MILD – {supp_expl}")
-    else:
-        st.info(f"Suppression: NORMAL – {supp_expl}")
-
-    if infl_label == "HIGH":
-        st.error(f"Inflation: HIGH – {infl_expl}")
-    elif infl_label == "MILD":
-        st.warning(f"Inflation: MILD – {infl_expl}")
-    else:
-        st.info(f"Inflation: NORMAL – {infl_expl}")
-
-    return stats
-
-
-def layout_itm_ce_section(itm_ce_info, ob_info, nifty_change):
-    st.subheader("🎯 ≥100pt ITM CE – Dip Buying")
-
-    if itm_ce_info is None:
-        st.info("Deep ITM NIFTY CE not available.")
-        return
-
-    ce_chg = itm_ce_info["pct_change"]
-    ce_ltp = itm_ce_info["ltp"]
-    ce_ltq = itm_ce_info.get("last_quantity")
-    ce_symbol = itm_ce_info["tradingsymbol"]
-    strike = itm_ce_info["strike"]
-    expiry = itm_ce_info["expiry"]
-    volume_total = itm_ce_info.get("volume_total")
-    instrument = itm_ce_info["instrument"]
-
-    est_vol_15s = compute_recent_volume_15s(instrument, volume_total)
-    strike_label = int(strike)
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("ITM CE", ce_symbol)
-        st.metric("Strike", f"{strike_label}")
-    with col2:
-        st.metric("Expiry", str(expiry))
-
-    # LTP + LTQ row
-    col_ltp, col_ltq = st.columns(2)
-    col_ltp.metric("CE LTP", _fmt_price(ce_ltp))
-    col_ltq.metric("CE LTQ", _fmt_int(ce_ltq))
-
-    col3, col4, col5 = st.columns(3)
-    col3.metric("CE %", _fmt_pct(ce_chg))
-    col4.metric("NIFTY %", _fmt_pct(nifty_change))
-    col5.metric(
-        "Est Vol (15s)",
-        "-" if est_vol_15s is None else _fmt_int(est_vol_15s),
-    )
-
-    level = classify_ce_divergence(ce_chg, nifty_change)
-
-    if level == "strong":
-        msg = "NIFTY weak, deep ITM CE flat/green – strong call accumulation risk."
-        st.error(f"Divergence (Strike {strike_label}): STRONG – {msg}")
-    elif level == "mild":
-        msg = "NIFTY weak, deep ITM CE relatively strong – mild call buying."
-        st.warning(f"Divergence (Strike {strike_label}): MILD – {msg}")
-    else:
-        st.info(f"Divergence (Strike {strike_label}): NEUTRAL – no special CE signal.")
-
-    st.markdown("**Order Book (ITM CE)**")
-
-    if ob_info is None:
-        st.info("Order book for CE not available.")
-        return
-
-    total_bid = ob_info["total_bid_qty"]
-    total_ask = ob_info["total_ask_qty"]
-    ratio = ob_info["bid_dom_ratio"]
-    footprint = ob_info["footprint"]
-    desc = ob_info["description"]
-    top_bid = ob_info["top_bid_price"]
-    top_ask = ob_info["top_ask_price"]
-
-    # First row: quantities & ratio
-    colb1, colb2, colb3 = st.columns(3)
-    colb1.metric("Bid Qty (top 5)", _fmt_int(total_bid))
-    colb2.metric("Ask Qty (top 5)", _fmt_int(total_ask))
-    colb3.metric(
-        "Bid/Ask Qty",
-        "-" if ratio in (0.0, float("inf")) else f"{ratio:.2f}",
-    )
-
-    # Second row: prices
-    colp1, colp2 = st.columns(2)
-    colp1.metric("Top Bid", _fmt_price(top_bid))
-    colp2.metric("Top Ask", _fmt_price(top_ask))
-
-    if footprint == "STRONG":
-        st.error(f"Footprint (Strike {strike_label}): STRONG – {desc}")
-    elif footprint == "MILD":
-        st.warning(f"Footprint (Strike {strike_label}): MILD – {desc}")
-    else:
-        st.info(f"Footprint (Strike {strike_label}): NONE – {desc}")
-
-
-def layout_itm_pe_section(itm_pe_info, ob_info, nifty_change):
-    st.subheader("🩸 ≥100pt ITM PE – Ramp & Dump")
-
-    if itm_pe_info is None:
-        st.info("Deep ITM NIFTY PE not available.")
-        return
-
-    pe_chg = itm_pe_info["pct_change"]
-    pe_ltp = itm_pe_info["ltp"]
-    pe_ltq = itm_pe_info.get("last_quantity")
-    pe_symbol = itm_pe_info["tradingsymbol"]
-    strike = itm_pe_info["strike"]
-    expiry = itm_pe_info["expiry"]
-    volume_total = itm_pe_info.get("volume_total")
-    instrument = itm_pe_info["instrument"]
-
-    est_vol_15s = compute_recent_volume_15s(instrument, volume_total)
-    strike_label = int(strike)
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("ITM PE", pe_symbol)
-        st.metric("Strike", f"{strike_label}")
-    with col2:
-        st.metric("Expiry", str(expiry))
-
-    # LTP + LTQ row
-    col_ltp, col_ltq = st.columns(2)
-    col_ltp.metric("PE LTP", _fmt_price(pe_ltp))
-    col_ltq.metric("PE LTQ", _fmt_int(pe_ltq))
-
-    col3, col4, col5 = st.columns(3)
-    col3.metric("PE %", _fmt_pct(pe_chg))
-    col4.metric("NIFTY %", _fmt_pct(nifty_change))
-    col5.metric(
-        "Est Vol (15s)",
-        "-" if est_vol_15s is None else _fmt_int(est_vol_15s),
-    )
-
-    level = classify_pe_divergence(pe_chg, nifty_change)
-
-    if level == "strong":
-        msg = "NIFTY strong, deep ITM PE flat/green – strong put accumulation risk."
-        st.error(f"Divergence (Strike {strike_label}): STRONG – {msg}")
-    elif level == "mild":
-        msg = "NIFTY strong, deep ITM PE not collapsing – mild put buying/hedging."
-        st.warning(f"Divergence (Strike {strike_label}): MILD – {msg}")
-    else:
-        st.info(f"Divergence (Strike {strike_label}): NEUTRAL – no special PE signal.")
-
-    st.markdown("**Order Book (ITM PE)**")
-
-    if ob_info is None:
-        st.info("Order book for PE not available.")
-        return
-
-    total_bid = ob_info["total_bid_qty"]
-    total_ask = ob_info["total_ask_qty"]
-    ratio = ob_info["bid_dom_ratio"]
-    footprint = ob_info["footprint"]
-    desc = ob_info["description"]
-    top_bid = ob_info["top_bid_price"]
-    top_ask = ob_info["top_ask_price"]
-
-    # First row: quantities & ratio
-    colb1, colb2, colb3 = st.columns(3)
-    colb1.metric("Bid Qty (top 5)", _fmt_int(total_bid))
-    colb2.metric("Ask Qty (top 5)", _fmt_int(total_ask))
-    colb3.metric(
-        "Bid/Ask Qty",
-        "-" if ratio in (0.0, float("inf")) else f"{ratio:.2f}",
-    )
-
-    # Second row: prices
-    colp1, colp2 = st.columns(2)
-    colp1.metric("Top Bid", _fmt_price(top_bid))
-    colp2.metric("Top Ask", _fmt_price(top_ask))
-
-    if footprint == "STRONG":
-        st.error(f"Footprint (Strike {strike_label}): STRONG – {desc}")
-    elif footprint == "MILD":
-        st.warning(f"Footprint (Strike {strike_label}): MILD – {desc}")
-    else:
-        st.info(f"Footprint (Strike {strike_label}): NONE – {desc}")
-
-
-def layout_snapshot(df: pd.DataFrame, itm_ce_info, ob_ce_info, itm_pe_info, ob_pe_info):
+def render_snapshot(df: pd.DataFrame):
     if df is None or df.empty:
-        st.warning("No data returned from Kite.")
-        return None  # for stats
-
-    nifty_rows = df[df["Symbol"] == NIFTY_INDEX_SYMBOL]
-    if nifty_rows.empty:
-        st.warning("NIFTY row missing. Showing only heavyweights.")
-        _render_heavyweights_table(df)
+        st.warning("No data returned.")
         return None
 
-    nifty_row = nifty_rows.iloc[0]
-    nifty_ltp = nifty_row["LTP"]
-    nifty_change = nifty_row["% Change"]
-    nifty_ts = nifty_row["Timestamp"]
+    nr = df[df["Symbol"] == NIFTY_INDEX_SYMBOL]
+    if nr.empty:
+        st.warning("NIFTY row missing.")
+        return None
 
-    nifty_ltp_display = _fmt_price(nifty_ltp)
-    nifty_change_display = _fmt_pct(nifty_change)
-
-    if isinstance(nifty_ts, datetime):
-        ts_display = nifty_ts.astimezone(ZoneInfo("Asia/Kolkata")).strftime("%H:%M:%S")
-    else:
-        ts_display = str(nifty_ts)
+    r = nr.iloc[0]
+    ts: datetime = r["Timestamp"]
+    ts_str = ts.astimezone(TZ).strftime("%H:%M:%S") if isinstance(ts, datetime) else str(ts)
 
     st.subheader("📈 NIFTY Snapshot")
-    col1, col2, col3 = st.columns(3)
-    col1.metric("NIFTY LTP", nifty_ltp_display)
-    col2.metric("NIFTY %", nifty_change_display)
-    col3.write(f"Timestamp (IST): {ts_display}")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("NIFTY LTP", _fmt_price(r["LTP"]))
+    c2.metric("NIFTY %", _fmt_pct(r["% Change"]))
+    c3.write(f"Timestamp (IST): {ts_str}")
 
-    stats = layout_suppression_section(df)
+    return float(r["LTP"]) if r["LTP"] is not None and not pd.isna(r["LTP"]) else None
 
-    st.subheader("🎯 Options Operator Footprint – Deep ITM CE & PE")
-    col_ce, col_pe = st.columns(2)
-    with col_ce:
-        layout_itm_ce_section(itm_ce_info, ob_ce_info, nifty_change)
-    with col_pe:
-        layout_itm_pe_section(itm_pe_info, ob_pe_info, nifty_change)
+def render_suppression(stats: dict | None, beep_enabled: bool):
+    st.subheader("🧲 NIFTY vs Heavyweights")
 
+    if not stats:
+        st.info("Not enough clean data yet.")
+        return
+
+    supp = stats["supp_label"]
+    infl = stats["infl_label"]
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("NIFTY %", _fmt_pct(stats["nifty_change"]))
+    c2.metric("Avg Heavyweights %", _fmt_pct(stats["avg_heavy_change"]))
+    c3.metric("Heavy - NIFTY", _fmt_pct(stats["divergence"]))
+
+    is_high = (supp == "HIGH") or (infl == "HIGH")
+    _beep_on_high_transition(is_high=is_high, enabled=beep_enabled)
+
+    if supp == "HIGH":
+        st.error("Suppression: HIGH")
+    elif supp == "MILD":
+        st.warning("Suppression: MILD")
+    else:
+        st.info("Suppression: NORMAL")
+
+    if infl == "HIGH":
+        st.error("Inflation: HIGH")
+    elif infl == "MILD":
+        st.warning("Inflation: MILD")
+    else:
+        st.info("Inflation: NORMAL")
+
+def render_option_card(title: str, opt: dict | None, nifty_change: float | None, side: str):
+    st.subheader(title)
+
+    if not opt:
+        st.info("Not available.")
+        return "neutral", "NONE"
+
+    depth = opt.get("depth") or {}
+    strike = int(opt["strike"])
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric("Symbol", opt["tradingsymbol"])
+        st.metric("Strike", str(strike))
+    with c2:
+        st.metric("Expiry", str(opt["expiry"]))
+
+    c3, c4 = st.columns(2)
+    c3.metric("LTP", _fmt_price(opt.get("ltp")))
+    c4.metric("LTQ", _fmt_int(opt.get("last_quantity")))
+
+    vol15 = compute_recent_volume_15s(opt["instrument"], opt.get("volume_total"))
+
+    c5, c6, c7 = st.columns(3)
+    c5.metric("%", _fmt_pct(opt.get("pct_change")))
+    c6.metric("NIFTY %", _fmt_pct(nifty_change))
+    c7.metric("Est Vol (15s)", _fmt_int(vol15) if vol15 is not None else "-")
+
+    if side == "CE":
+        div = classify_ce_divergence(opt.get("pct_change"), nifty_change)
+    else:
+        div = classify_pe_divergence(opt.get("pct_change"), nifty_change)
+
+    if div == "strong":
+        st.error(f"Divergence: STRONG (Strike {strike})")
+    elif div == "mild":
+        st.warning(f"Divergence: MILD (Strike {strike})")
+    else:
+        st.info(f"Divergence: NEUTRAL (Strike {strike})")
+
+    st.markdown("**Order Book (Top 5 depth)**")
+    b1, b2, b3 = st.columns(3)
+    b1.metric("Bid Qty", _fmt_int(depth.get("bid_qty")))
+    b2.metric("Ask Qty", _fmt_int(depth.get("ask_qty")))
+    ratio = depth.get("bid_ask_ratio")
+    b3.metric("Bid/Ask", "-" if ratio in (0.0, float("inf")) else f"{ratio:.2f}")
+
+    p1, p2 = st.columns(2)
+    p1.metric("Top Bid", _fmt_price(depth.get("top_bid")))
+    p2.metric("Top Ask", _fmt_price(depth.get("top_ask")))
+
+    fp = depth.get("footprint", "NONE")
+    if fp == "STRONG":
+        st.error("Footprint: STRONG")
+    elif fp == "MILD":
+        st.warning("Footprint: MILD")
+    else:
+        st.info("Footprint: NONE")
+
+    return div, fp
+
+def render_heavyweights_table(df: pd.DataFrame):
     st.subheader("🏋️ Heavyweights")
-    _render_heavyweights_table(df)
+    if df is None or df.empty:
+        st.info("No rows")
+        return
 
-    return stats
+    t = df.copy()
+    t["LTP"] = t["LTP"].map(_fmt_price)
+    t["Prev Close"] = t["Prev Close"].map(_fmt_price)
+    t["% Change"] = t["% Change"].map(_fmt_pct)
 
+    st.dataframe(t[["Symbol", "LTP", "Prev Close", "% Change"]], use_container_width=True, hide_index=True)
 
-def _render_heavyweights_table(df: pd.DataFrame):
-    display_df = df.copy()
-    display_df["LTP"] = display_df["LTP"].map(_fmt_price)
-    display_df["Prev Close"] = display_df["Prev Close"].map(_fmt_price)
-    display_df["% Change"] = display_df["% Change"].map(_fmt_pct)
+# =========================
+# BURST MODE TRIGGER
+# =========================
+def detect_strong_signal(stats: dict | None, ce_div: str, ce_fp: str, pe_div: str, pe_fp: str) -> bool:
+    if stats and (stats.get("supp_label") == "HIGH" or stats.get("infl_label") == "HIGH"):
+        return True
+    if ce_div == "strong" and ce_fp in ("MILD", "STRONG"):
+        return True
+    if pe_div == "strong" and pe_fp in ("MILD", "STRONG"):
+        return True
+    return False
 
-    st.dataframe(
-        display_df[["Symbol", "LTP", "Prev Close", "% Change"]],
-        use_container_width=True,
-        hide_index=True,
+# =========================
+# MAIN
+# =========================
+def main():
+    render_header()
+
+    api_key, api_secret, access_token = _auth_sidebar()
+
+    st.sidebar.header("⚙️ Settings")
+    beep_enabled = st.sidebar.toggle("Audio alert on HIGH", value=True)
+    burst_enabled = st.sidebar.toggle("Burst mode", value=True)
+
+    base_refresh_seconds = st.sidebar.slider(
+        "Base refresh (seconds)",
+        min_value=5,
+        max_value=60,
+        value=DEFAULT_BASE_REFRESH_SECONDS,
+        step=5,
     )
 
+    history_window = st.sidebar.slider(
+        "History window (minutes)",
+        min_value=1,
+        max_value=20,
+        value=DEFAULT_HISTORY_WINDOW_MINUTES,
+        step=1,
+    )
 
-# --------- BURST MODE DECISION LOGIC ---------
-def detect_strong_signal(
-    df: pd.DataFrame,
-    stats: dict | None,
-    itm_ce_info: dict | None,
-    ob_ce_info: dict | None,
-    itm_pe_info: dict | None,
-    ob_pe_info: dict | None,
-) -> bool:
-    """
-    Burst Mode when:
-      - Suppression HIGH or Inflation HIGH
-      - OR strong CE divergence + CE footprint MILD/STRONG
-      - OR strong PE divergence + PE footprint MILD/STRONG
-    """
-    if df is None or df.empty:
-        return False
+    heavyweights = st.sidebar.multiselect(
+        "Heavyweights universe",
+        options=sorted(set(DEFAULT_HEAVYWEIGHTS)),
+        default=DEFAULT_HEAVYWEIGHTS,
+        help="Keep it tight; every extra symbol is extra load.",
+    )
 
-    strong = False
+    if not access_token:
+        st.warning("No access_token available. Refresh token in the sidebar to enable live data.")
+        st.stop()
 
-    if stats is not None:
-        if stats.get("supp_label") == "HIGH" or stats.get("infl_label") == "HIGH":
-            strong = True
+    kite = get_kite_client(api_key, access_token)
 
-    nifty_rows = df[df["Symbol"] == NIFTY_INDEX_SYMBOL]
-    if nifty_rows.empty:
-        return strong
+    try:
+        nifty_opt_df = get_nifty_option_instruments(api_key, access_token)
+    except Exception as e:
+        st.error(f"Failed to fetch instruments list: {e}")
+        st.stop()
 
-    nifty_change = nifty_rows.iloc[0]["% Change"]
+    try:
+        df = fetch_ltp_snapshot(kite, heavyweights)
+    except Exception as e:
+        st.error(f"Kite data fetch failed: {e}")
+        st.info("If this looks like an auth/token error, refresh token from the sidebar.")
+        st.stop()
 
-    if itm_ce_info is not None:
-        ce_level = classify_ce_divergence(itm_ce_info.get("pct_change"), nifty_change)
-        ce_fp = (ob_ce_info or {}).get("footprint", "NONE")
-        if ce_level == "strong" and ce_fp in ("MILD", "STRONG"):
-            strong = True
+    nifty_spot = render_snapshot(df)
 
-    if itm_pe_info is not None:
-        pe_level = classify_pe_divergence(itm_pe_info.get("pct_change"), nifty_change)
-        pe_fp = (ob_pe_info or {}).get("footprint", "NONE")
-        if pe_level == "strong" and pe_fp in ("MILD", "STRONG"):
-            strong = True
+    stats = compute_suppression_stats(df)
+    render_suppression(stats, beep_enabled=beep_enabled)
 
-    return strong
+    st.subheader("🎯 Options Operator Footprint — Deep ITM CE & PE")
 
+    nifty_change = None
+    nr = df[df["Symbol"] == NIFTY_INDEX_SYMBOL]
+    if not nr.empty:
+        nifty_change = nr.iloc[0]["% Change"]
 
-# --------- MAIN APP ---------
-def main():
-    layout_header()
+    ce_info = None
+    pe_info = None
+    if nifty_spot is not None and not nifty_opt_df.empty:
+        try:
+            ce_info, pe_info = quote_deep_itm_pair(kite, nifty_opt_df, nifty_spot)
+        except Exception as e:
+            st.warning(f"Option quote failed: {e}")
 
-    with st.sidebar:
-        st.header("Settings")
-        base_refresh_seconds = st.slider(
-            "Base auto-refresh (s)", 5, 60, 15, step=5
-        )
-        st.caption(
-            "Calm market → base interval.\n"
-            f"Strong signal → auto {BURST_REFRESH_SECONDS}s Burst Mode."
-        )
+    col_ce, col_pe = st.columns(2)
+    with col_ce:
+        ce_div, ce_fp = render_option_card("🎯 ≥100pt ITM CE — Dip Buying", ce_info, nifty_change, side="CE")
+    with col_pe:
+        pe_div, pe_fp = render_option_card("🩸 ≥100pt ITM PE — Ramp & Dump", pe_info, nifty_change, side="PE")
 
-    kite = get_kite_client()
-    nifty_opt_df = get_nifty_option_instruments()
+    render_heavyweights_table(df)
 
-    def run_fetch_and_render():
-        df = fetch_ltp_snapshot(kite)
-        if df.empty:
-            st.warning("No LTP/OHLC data from Kite.")
-            return False
+    update_history(history_window, df, stats, ce_info, pe_info)
+    render_history(history_window)
 
-        nifty_rows = df[df["Symbol"] == NIFTY_INDEX_SYMBOL]
+    strong = detect_strong_signal(stats, ce_div, ce_fp, pe_div, pe_fp)
 
-        itm_ce_info = None
-        itm_pe_info = None
-        ob_ce_info = None
-        ob_pe_info = None
-        ce_div_level = None
-        pe_div_level = None
-
-        if not nifty_rows.empty and not nifty_opt_df.empty:
-            nifty_spot = nifty_rows.iloc[0]["LTP"]
-            nifty_change = nifty_rows.iloc[0]["% Change"]
-            if nifty_spot is not None and not pd.isna(nifty_spot):
-                # Deep ITM CE
-                itm_ce_info = fetch_itm_option_quote(
-                    kite, nifty_opt_df, float(nifty_spot), "CE"
-                )
-                if itm_ce_info is not None:
-                    ob_ce_info = fetch_orderbook_for_option(kite, itm_ce_info)
-                    ce_div_level = classify_ce_divergence(
-                        itm_ce_info.get("pct_change"), nifty_change
-                    )
-
-                # Deep ITM PE
-                itm_pe_info = fetch_itm_option_quote(
-                    kite, nifty_opt_df, float(nifty_spot), "PE"
-                )
-                if itm_pe_info is not None:
-                    ob_pe_info = fetch_orderbook_for_option(kite, itm_pe_info)
-                    pe_div_level = classify_pe_divergence(
-                        itm_pe_info.get("pct_change"), nifty_change
-                    )
-
-        # Render main layout and get stats from there
-        stats = layout_snapshot(df, itm_ce_info, ob_ce_info, itm_pe_info, ob_pe_info)
-
-        # Update in-memory history strip (last 5 minutes)
-        update_history(
-            df,
-            stats,
-            itm_ce_info,
-            ce_div_level,
-            ob_ce_info,
-            itm_pe_info,
-            pe_div_level,
-            ob_pe_info,
-        )
-
-        # History section at bottom
-        layout_history_section()
-
-        strong_signal = detect_strong_signal(
-            df, stats, itm_ce_info, ob_ce_info, itm_pe_info, ob_pe_info
-        )
-        return strong_signal
-
-    strong_signal = run_fetch_and_render()
-
-    if strong_signal:
-        effective_refresh = BURST_REFRESH_SECONDS
-        with st.sidebar:
-            st.warning(
-                f"🔥 Burst Mode ACTIVE – strong footprint detected.\n"
-                f"Refresh ~every {BURST_REFRESH_SECONDS}s."
-            )
+    if burst_enabled and strong:
+        effective = BURST_REFRESH_SECONDS
+        st.sidebar.warning(f"🔥 Burst active → ~{effective}s")
     else:
-        effective_refresh = base_refresh_seconds
-        with st.sidebar:
-            st.info(
-                f"Market calm (by this model). "
-                f"Base refresh: {base_refresh_seconds}s."
-            )
+        effective = base_refresh_seconds
+        st.sidebar.info(f"Refresh: ~{effective}s")
 
-    st_autorefresh(interval=int(effective_refresh * 1000), key="auto_refresh")
-
+    st_autorefresh(interval=int(effective * 1000), key="auto_refresh")
 
 if __name__ == "__main__":
     main()
