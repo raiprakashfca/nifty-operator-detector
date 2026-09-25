@@ -154,9 +154,6 @@
 
   /* ---- auth ---- */
   .auth-card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:26px;margin-top:20px;box-shadow:0 20px 50px -30px rgba(0,0,0,.5);}
-  .auth-tabs{display:flex;gap:4px;background:var(--surface-2);padding:4px;border-radius:10px;margin-bottom:22px;}
-  .auth-tab{flex:1;padding:9px;border:none;background:transparent;border-radius:8px;font-weight:600;font-size:.88rem;color:var(--text-muted);cursor:pointer;font-family:"IBM Plex Sans",sans-serif;}
-  .auth-tab.active{background:var(--surface);color:var(--text);box-shadow:0 1px 3px rgba(0,0,0,.15);}
 
   /* ---- blog ---- */
   .blog-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:18px;margin-top:32px;}
@@ -568,11 +565,6 @@
     <div class="wrap" style="max-width:440px;">
       <a href="#" style="font-size:.85rem;color:var(--text-muted);text-decoration:none;">&larr; Back to ApnaAlgo</a>
       <div class="auth-card">
-        <div class="auth-tabs">
-          <button type="button" class="auth-tab" id="tabLogin">Log in</button>
-          <button type="button" class="auth-tab" id="tabSignup">Sign up</button>
-        </div>
-
         <form class="request" id="loginForm">
           <h2 style="font-size:1.25rem;font-family:'Sora',sans-serif;">Welcome back</h2>
           <input id="loginEmail" type="email" placeholder="Email address" required>
@@ -583,21 +575,6 @@
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 12l5 5L20 6" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
             Preview only — sign-in isn't wired up yet.
           </div>
-          <p class="form-note">New to ApnaAlgo? <a href="#signup" style="color:var(--brand);font-weight:600;">Create an account</a></p>
-        </form>
-
-        <form class="request" id="signupForm" hidden>
-          <h2 style="font-size:1.25rem;font-family:'Sora',sans-serif;">Create your account</h2>
-          <input id="signupName" type="text" placeholder="Full name" required>
-          <input id="signupEmail" type="email" placeholder="Email address" required>
-          <input id="signupPhone" type="tel" placeholder="Phone number">
-          <input id="signupPassword" type="password" placeholder="Password" required>
-          <button class="btn btn-primary" type="submit">Create account</button>
-          <div class="success-msg" id="signupSuccess">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 12l5 5L20 6" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            Preview only — account creation isn't wired up yet.
-          </div>
-          <p class="form-note">Already have an account? <a href="#login" style="color:var(--brand);font-weight:600;">Log in</a></p>
         </form>
       </div>
     </div>
@@ -721,21 +698,8 @@
     a.addEventListener('click', function(){ mobileLinks.hidden = true; });
   });
 
-  /* ---- auth tabs ---- */
+  /* ---- login ---- */
   var loginForm = document.getElementById('loginForm');
-  var signupForm = document.getElementById('signupForm');
-  var tabLogin = document.getElementById('tabLogin');
-  var tabSignup = document.getElementById('tabSignup');
-
-  function setAuthTab(tab){
-    var isLogin = tab !== 'signup';
-    loginForm.hidden = !isLogin;
-    signupForm.hidden = isLogin;
-    tabLogin.classList.toggle('active', isLogin);
-    tabSignup.classList.toggle('active', !isLogin);
-  }
-  tabLogin.addEventListener('click', function(){ location.hash = 'login'; });
-  tabSignup.addEventListener('click', function(){ location.hash = 'signup'; });
 
   function previewSubmit(form, msg){
     form.addEventListener('submit', function(e){
@@ -746,7 +710,6 @@
     });
   }
   previewSubmit(loginForm, document.getElementById('loginSuccess'));
-  previewSubmit(signupForm, document.getElementById('signupSuccess'));
 
   /* ---- blog ---- */
   var POSTS = [
@@ -913,7 +876,7 @@
   };
 
   function routeFor(hash){
-    if (hash === 'login' || hash === 'signup') return 'auth';
+    if (hash === 'login') return 'auth';
     if (hash === 'blog') return 'blog';
     if (hash.indexOf('blog-') === 0) return 'post';
     return 'home';
@@ -924,7 +887,6 @@
     var route = routeFor(hash);
     Object.keys(views).forEach(function(k){ views[k].hidden = (k !== route); });
 
-    if (route === 'auth') setAuthTab(hash);
     if (route === 'post') renderPost(hash.replace('blog-', ''));
 
     if (route === 'home' && hash && document.getElementById(hash)) {

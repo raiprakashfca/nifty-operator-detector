@@ -49,7 +49,7 @@ else
   echo "STOPPING - paste this output back to Claude"; exit 1
 fi
 
-echo "== 4. check (want 200 48508, gistdesk still 200) =="
+echo "== 4. check (want 200 46015, gistdesk still 200) =="
 curl -s -o /dev/null -w "apnaalgo http %{http_code} %{size_download}\n" -H "Host: apnaalgo.ai" http://127.0.0.1/
 curl -s -o /dev/null -w "www      http %{http_code} %{size_download}\n" -H "Host: www.apnaalgo.ai" http://127.0.0.1/
 curl -sk -o /dev/null -w "gistdesk https %{http_code} %{size_download}\n" --resolve gistdesk.in:443:127.0.0.1 https://gistdesk.in/

@@ -15,7 +15,7 @@ curl -fsSL "$URL" -o "$ROOT/index.html.new" || { echo "DOWNLOAD FAILED"; exit 1;
 mv "$ROOT/index.html.new" "$ROOT/index.html"
 chown --reference="$ROOT" "$ROOT/index.html"; chmod 644 "$ROOT/index.html"
 nginx -t && systemctl reload nginx
-echo "== 3. local check (want 200 48508) =="
+echo "== 3. local check (want 200 46015) =="
 curl -s -o /dev/null -w "http %{http_code} %{size_download}\n" -H "Host: apnaalgo.ai" http://127.0.0.1/
 curl -sk -o /dev/null -w "https %{http_code} %{size_download}\n" --resolve apnaalgo.ai:443:127.0.0.1 https://apnaalgo.ai/
 echo "== 4. TLS cert =="

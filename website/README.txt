@@ -3,7 +3,7 @@ ApnaAlgo website — Hostinger upload instructions
 
 WHAT'S IN HERE
 --------------
-index.html   The entire site: home page, Login/Sign up, and Blog.
+index.html   The entire site: home page, Login, and Blog.
              One file, no build step, no dependencies to install.
 
 HOW TO UPLOAD (Hostinger File Manager)
@@ -33,7 +33,7 @@ internet:
   - Google Fonts (Sora, IBM Plex Sans, IBM Plex Mono)
   - Nothing else. No frameworks, no build tools, no npm.
 
-Navigation between "pages" (Home, Login/Sign up, Blog, individual blog
+Navigation between "pages" (Home, Login, Blog, individual blog
 posts) works through the URL's hash (#login, #blog, #blog-<slug>) using
 JavaScript — this means it works on any static host, including
 Hostinger's shared hosting, with zero server configuration.
@@ -45,12 +45,13 @@ WHAT STILL NEEDS YOUR INPUT
 2. BLOG POSTS — the 4 posts are realistic sample content in a Hinglish
    tone (matching the app), meant as a starting structure. Replace or
    approve before this goes live publicly.
-3. LOGIN / SIGN UP — the forms are front-end only right now. They show
-   a "preview only" message on submit instead of creating a real
-   account. This needs a real backend (custom API, Firebase, Supabase,
-   etc.) before it can go live — tell your developer which one and the
-   JavaScript submit handlers (near the bottom of index.html, search
-   for "previewSubmit") are the place to wire in real requests.
+3. LOGIN — the form is front-end only right now. It shows a "preview
+   only" message on submit instead of signing anyone in. This needs a
+   real backend (custom API, Firebase, Supabase, etc.) before it can go
+   live — tell your developer which one and the JavaScript submit
+   handler (near the bottom of index.html, search for "previewSubmit")
+   is the place to wire in real requests. There is no sign-up page;
+   it was removed on request.
 4. PRICING — currently shows "Request a Quote" with no fixed number,
    per your instruction. Update the request-handling flow (currently
    just a front-end confirmation message) to actually notify you by
