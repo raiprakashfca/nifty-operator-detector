@@ -1,0 +1,944 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ApnaAlgo — Options Execution Terminal for Indian Markets</title>
+<meta name="description" content="ApnaAlgo is an options execution terminal for NIFTY, BANKNIFTY and more. Build a strategy, check the payoff and Greeks, then arm server-side exit rules that keep running after you close the laptop.">
+<meta property="og:title" content="ApnaAlgo — Options Execution Terminal">
+<meta property="og:description" content="Close the laptop. The exit still fires. Build options strategies, check payoff and Greeks, and arm server-side exit rules for NIFTY, BANKNIFTY and more.">
+<meta property="og:type" content="website">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2316a34a'/%3E%3Cpath d='M18 40 L28 28 L38 36 L48 20' stroke='%2304170a' stroke-width='5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+  :root{
+    --bg:#f6f8f5;
+    --surface:#ffffff;
+    --surface-2:#eef2ec;
+    --border:#dbe3dc;
+    --text:#0e1912;
+    --text-muted:#57685d;
+    --brand:#16a34a;
+    --brand-deep:#0f6b32;
+    --up:#16a34a;
+    --down:#dc2626;
+    --buy:#0284c7;
+    --sell:#b45309;
+    --highlight:#fde68a;
+    --market:#16a34a;
+    --market-soft:rgba(22,163,74,0.14);
+    color-scheme:light;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#070c09;
+      --surface:#0f1712;
+      --surface-2:#141e17;
+      --border:#223027;
+      --text:#edf4ee;
+      --text-muted:#8fa397;
+      --brand:#22c55e;
+      --brand-deep:#15803d;
+      --up:#34d399;
+      --down:#f87171;
+      --buy:#38bdf8;
+      --sell:#f59e0b;
+      --highlight:#fde68a;
+      color-scheme:dark;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#070c09;
+    --surface:#0f1712;
+    --surface-2:#141e17;
+    --border:#223027;
+    --text:#edf4ee;
+    --text-muted:#8fa397;
+    --brand:#22c55e;
+    --brand-deep:#15803d;
+    --up:#34d399;
+    --down:#f87171;
+    --buy:#38bdf8;
+    --sell:#f59e0b;
+    --highlight:#fde68a;
+    color-scheme:dark;
+  }
+
+  *{box-sizing:border-box;}
+  [hidden]{display:none!important;}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--text);
+    font-family:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1180px;margin:0 auto;padding-inline:24px;}
+  h1,h2,h3{font-family:"Sora",sans-serif;text-wrap:balance;margin:0;}
+  .mono{font-family:"IBM Plex Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums;}
+  a{color:inherit;}
+  img{max-width:100%;}
+
+  /* ---- nav ---- */
+  header.site{
+    position:sticky;top:env(safe-area-inset-top,0px);z-index:40;
+    background:color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter:blur(10px);
+    border-bottom:1px solid var(--border);
+  }
+  .navrow{display:flex;align-items:center;justify-content:space-between;padding-block:14px;gap:16px;}
+  .brand{display:flex;align-items:center;gap:9px;font-family:"Sora",sans-serif;font-weight:700;font-size:1.05rem;letter-spacing:-.01em;}
+  .brand .mark{
+    width:30px;height:30px;border-radius:8px;
+    background:linear-gradient(155deg,var(--brand),var(--brand-deep));
+    display:flex;align-items:center;justify-content:center;
+    color:#08150d;font-weight:800;font-size:.85rem;
+  }
+  .brand .hindi{color:var(--text-muted);font-weight:500;font-size:.8rem;}
+  nav.links{display:flex;gap:28px;font-size:.92rem;color:var(--text-muted);}
+  nav.links a{text-decoration:none;transition:color .15s;}
+  nav.links a:hover{color:var(--text);}
+  .navcta{display:flex;align-items:center;gap:14px;}
+  .btn{
+    display:inline-flex;align-items:center;justify-content:center;gap:8px;
+    border-radius:9px;padding:10px 18px;font-weight:600;font-size:.92rem;
+    border:1px solid transparent;cursor:pointer;text-decoration:none;
+    transition:transform .12s ease, box-shadow .12s ease, background .15s;
+    font-family:"IBM Plex Sans",sans-serif;
+  }
+  .btn:active{transform:translateY(1px);}
+  .btn-primary{background:var(--brand);color:#04170a;box-shadow:0 8px 22px -10px color-mix(in srgb, var(--brand) 70%, transparent);}
+  .btn-primary:hover{background:var(--brand-deep);color:#eafff0;transform:translateY(-1px);}
+  .btn-ghost{background:transparent;border-color:var(--border);color:var(--text);}
+  .btn-ghost:hover{border-color:var(--brand);}
+  .navtoggle{display:none;align-items:center;justify-content:center;background:none;border:1px solid var(--border);border-radius:8px;width:38px;height:38px;color:var(--text);cursor:pointer;}
+  .mobile-links{display:flex;flex-direction:column;gap:2px;padding:10px 24px 18px;border-top:1px solid var(--border);}
+  .mobile-links a{padding:10px 4px;text-decoration:none;color:var(--text-muted);font-size:.94rem;}
+  .mobile-links a.btn{color:#04170a;margin-top:8px;}
+
+  /* ---- scroll reveal (progressive enhancement: visible by default, JS opts elements into the pre-animation state) ---- */
+  .reveal.pre{opacity:0;transform:translateY(18px);transition:opacity .6s ease, transform .6s ease;}
+  .reveal.pre.in{opacity:1;transform:translateY(0);}
+  @media (prefers-reduced-motion: reduce){
+    .reveal.pre{opacity:1;transform:none;transition:none;}
+  }
+
+  /* ---- ticker tape ---- */
+  .ticker-wrap{overflow:hidden;border-bottom:1px solid var(--border);background:var(--surface);}
+  .ticker-track{display:flex;width:max-content;animation:ticker-scroll 32s linear infinite;}
+  .ticker-wrap:hover .ticker-track{animation-play-state:paused;}
+  @keyframes ticker-scroll{from{transform:translateX(0);}to{transform:translateX(-50%);}}
+  .ticker-item{display:flex;align-items:center;gap:8px;padding:11px 26px;font-family:"IBM Plex Mono",monospace;font-size:.82rem;white-space:nowrap;border-right:1px solid var(--border);}
+  .ticker-item .sym{font-weight:700;color:var(--text);}
+  .ticker-item .chg{font-weight:600;}
+  .ticker-item .chg.up{color:var(--up);}
+  .ticker-item .chg.down{color:var(--down);}
+  @media (prefers-reduced-motion: reduce){
+    .ticker-track{animation:none;}
+    .ticker-wrap{overflow-x:auto;}
+  }
+
+  /* ---- stat strip ---- */
+  .stat-row{display:flex;gap:36px;flex-wrap:wrap;padding-block:26px;border-top:1px solid var(--border);border-bottom:1px solid var(--border);}
+  .stat-item{display:flex;flex-direction:column;gap:2px;}
+  .stat-num{font-family:"Sora",sans-serif;font-weight:800;font-size:1.9rem;color:var(--brand);font-variant-numeric:tabular-nums;}
+  .stat-label{font-size:.8rem;color:var(--text-muted);}
+
+  /* ---- spotlight hover ---- */
+  .fcard, .brokercard{position:relative;overflow:hidden;}
+  .fcard::before, .brokercard::before{
+    content:"";position:absolute;inset:0;
+    background:radial-gradient(220px circle at var(--mx,50%) var(--my,50%), color-mix(in srgb, var(--brand) 16%, transparent), transparent 70%);
+    opacity:0;transition:opacity .3s ease;pointer-events:none;
+  }
+  .fcard:hover::before, .brokercard:hover::before{opacity:1;}
+
+  /* ---- auth ---- */
+  .auth-card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:26px;margin-top:20px;box-shadow:0 20px 50px -30px rgba(0,0,0,.5);}
+  .auth-tabs{display:flex;gap:4px;background:var(--surface-2);padding:4px;border-radius:10px;margin-bottom:22px;}
+  .auth-tab{flex:1;padding:9px;border:none;background:transparent;border-radius:8px;font-weight:600;font-size:.88rem;color:var(--text-muted);cursor:pointer;font-family:"IBM Plex Sans",sans-serif;}
+  .auth-tab.active{background:var(--surface);color:var(--text);box-shadow:0 1px 3px rgba(0,0,0,.15);}
+
+  /* ---- blog ---- */
+  .blog-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:18px;margin-top:32px;}
+  .blog-card{display:block;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px;text-decoration:none;color:inherit;transition:border-color .15s;}
+  .blog-card:hover{border-color:var(--brand);}
+  .blog-tag{font-size:.72rem;font-weight:700;color:var(--brand);text-transform:uppercase;letter-spacing:.06em;}
+  .blog-card h3{margin-top:10px;font-size:1.06rem;font-family:"Sora",sans-serif;font-weight:700;}
+  .blog-card p{color:var(--text-muted);font-size:.88rem;margin-top:8px;line-height:1.55;}
+  .blog-meta{margin-top:16px;font-size:.76rem;color:var(--text-muted);font-family:"IBM Plex Mono",monospace;}
+
+  /* ---- hero ---- */
+  .hero{padding-block:64px 56px;position:relative;overflow:hidden;}
+  .hero::before{
+    content:"";position:absolute;inset:-20% -10% auto -10%;height:520px;
+    background:radial-gradient(60% 60% at 30% 20%, var(--market-soft), transparent 70%);
+    filter:blur(10px);pointer-events:none;transition:background .6s ease;z-index:0;
+  }
+  .hero-grid{position:relative;z-index:1;display:grid;grid-template-columns:1.05fr .95fr;gap:48px;align-items:center;}
+  .eyebrow{
+    display:inline-flex;align-items:center;gap:8px;
+    font-size:.78rem;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--text-muted);border:1px solid var(--border);border-radius:999px;
+    padding:6px 12px;margin-bottom:18px;background:var(--surface);
+  }
+  .eyebrow .dot{width:6px;height:6px;border-radius:50%;background:var(--market);}
+  .hero h1{font-size:clamp(2.1rem,4vw,3.4rem);line-height:1.05;font-weight:700;}
+  .hero h1 .accent{color:var(--market);transition:color .6s ease;}
+  .hero p.lede{margin-top:18px;font-size:1.08rem;line-height:1.6;color:var(--text-muted);max-width:46ch;}
+  .hero-ctas{display:flex;gap:14px;margin-top:28px;flex-wrap:wrap;}
+
+  .pulse-card{
+    background:var(--surface);border:1px solid var(--border);border-radius:16px;
+    padding:20px;box-shadow:0 20px 50px -30px rgba(0,0,0,.5);
+  }
+  .pulse-top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px;}
+  .pulse-label{font-size:.75rem;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);}
+  .pulse-index{font-family:"Sora",sans-serif;font-weight:700;font-size:1rem;margin-top:4px;}
+  .pulse-badge{
+    display:flex;align-items:center;gap:6px;font-size:.78rem;font-weight:600;
+    padding:5px 10px;border-radius:999px;background:var(--market-soft);color:var(--market);
+    transition:background .5s ease, color .5s ease;
+  }
+  .pulse-price{font-size:2.2rem;font-weight:700;letter-spacing:-.01em;}
+  .pulse-change{font-size:.95rem;margin-top:4px;color:var(--market);transition:color .5s ease;}
+  .pulse-spark{width:100%;height:64px;margin-top:14px;display:block;}
+  .pulse-foot{display:flex;justify-content:space-between;font-size:.74rem;color:var(--text-muted);margin-top:12px;border-top:1px solid var(--border);padding-top:10px;}
+
+  /* ---- sections ---- */
+  section{padding-block:72px;}
+  .section-head{max-width:640px;margin-bottom:36px;}
+  .section-head .kicker{font-size:.78rem;letter-spacing:.08em;text-transform:uppercase;color:var(--brand);font-weight:600;margin-bottom:10px;display:block;}
+  .section-head h2{font-size:clamp(1.6rem,3vw,2.2rem);font-weight:700;}
+  .section-head p{color:var(--text-muted);margin-top:12px;font-size:1.02rem;line-height:1.6;}
+
+  .chiprow{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:40px;}
+  .chip{
+    font-family:"IBM Plex Mono",monospace;font-size:.82rem;font-weight:600;
+    padding:8px 14px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text-muted);
+  }
+  .chip.on{border-color:var(--brand);color:var(--brand);background:var(--market-soft);}
+
+  .grid-features{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;}
+  .fcard{
+    background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px;
+    display:flex;flex-direction:column;gap:14px;
+  }
+  .fcard h3{font-size:1rem;font-weight:700;}
+  .fcard p{font-size:.88rem;color:var(--text-muted);line-height:1.55;margin:0;}
+  .spark-mini{width:100%;height:34px;}
+  .pill{align-self:flex-start;font-size:.72rem;font-weight:600;padding:4px 10px;border-radius:999px;background:var(--market-soft);color:var(--market);}
+
+  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;}
+  .step{border:1px solid var(--border);border-radius:14px;padding:22px;background:var(--surface);position:relative;}
+  .step .num{font-family:"IBM Plex Mono",monospace;font-size:.8rem;color:var(--brand);font-weight:700;margin-bottom:10px;display:block;}
+  .step h3{font-size:1.02rem;margin-bottom:8px;}
+  .step p{color:var(--text-muted);font-size:.9rem;line-height:1.6;margin:0;}
+  .safety-note{
+    margin-top:24px;border-left:3px solid var(--brand);padding:14px 18px;background:var(--surface-2);
+    border-radius:0 10px 10px 0;font-size:.92rem;color:var(--text-muted);line-height:1.6;
+  }
+  .safety-note strong{color:var(--text);}
+
+  .brokerrow{display:flex;gap:16px;flex-wrap:wrap;}
+  .brokercard{
+    flex:1;min-width:220px;border:1px solid var(--border);background:var(--surface);border-radius:14px;padding:20px;
+  }
+  .brokercard .tag{font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);}
+  .brokercard h3{margin-top:6px;font-size:1.05rem;}
+  .brokercard p{color:var(--text-muted);font-size:.88rem;margin-top:8px;line-height:1.55;}
+
+  .pricing-card{
+    max-width:520px;border:1px solid var(--border);border-radius:18px;background:var(--surface);
+    padding:32px;box-shadow:0 30px 60px -40px rgba(0,0,0,.5);
+  }
+  .pricing-card .ptag{font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:var(--brand);font-weight:700;}
+  .pricing-card h3{font-size:1.5rem;margin-top:8px;}
+  .pricing-card .price{font-family:"Sora",sans-serif;font-size:2.6rem;font-weight:700;margin-top:14px;}
+  .pricing-card .price small{font-size:1rem;color:var(--text-muted);font-weight:500;}
+  .pricing-card .price.quote{font-size:1.7rem;color:var(--brand);}
+  .pricing-list{list-style:none;padding:0;margin:22px 0 0;display:flex;flex-direction:column;gap:10px;}
+  .pricing-list li{display:flex;gap:10px;align-items:flex-start;font-size:.92rem;color:var(--text-muted);}
+  .pricing-list li svg{flex:none;margin-top:2px;color:var(--brand);}
+  .pricing-foot{margin-top:22px;font-size:.8rem;color:var(--text-muted);border-top:1px solid var(--border);padding-top:16px;}
+
+  .cta-band{
+    border-radius:22px;border:1px solid var(--border);
+    background:linear-gradient(155deg,var(--surface),var(--surface-2));
+    padding:44px;display:grid;grid-template-columns:1.1fr .9fr;gap:32px;align-items:center;
+  }
+  .cta-band h2{font-size:clamp(1.5rem,3vw,2rem);}
+  .cta-band p{color:var(--text-muted);margin-top:10px;max-width:44ch;}
+  form.request{display:flex;flex-direction:column;gap:12px;}
+  form.request input{
+    background:var(--bg);border:1px solid var(--border);border-radius:9px;padding:11px 14px;
+    color:var(--text);font-size:.92rem;font-family:inherit;
+  }
+  form.request input:focus{outline:2px solid var(--brand);outline-offset:1px;}
+  .form-note{font-size:.78rem;color:var(--text-muted);}
+  .success-msg{display:none;align-items:center;gap:8px;font-size:.9rem;color:var(--market);font-weight:600;}
+  .success-msg.show{display:flex;}
+
+  footer{border-top:1px solid var(--border);padding-block:36px 40px;margin-top:20px;}
+  .foot-grid{display:flex;justify-content:space-between;gap:24px;flex-wrap:wrap;}
+  .foot-links{display:flex;gap:22px;font-size:.86rem;color:var(--text-muted);flex-wrap:wrap;}
+  .foot-links a{text-decoration:none;}
+  .foot-links a:hover{color:var(--text);}
+  .disclaimer{font-size:.76rem;color:var(--text-muted);line-height:1.6;margin-top:22px;max-width:80ch;}
+
+  @media (max-width:920px){
+    .hero-grid{grid-template-columns:1fr;}
+    .grid-features{grid-template-columns:repeat(2,1fr);}
+    .steps{grid-template-columns:1fr;}
+    .cta-band{grid-template-columns:1fr;padding:28px;}
+    nav.links{display:none;}
+    .navtoggle{display:flex;align-items:center;justify-content:center;}
+  }
+  @media (max-width:700px){
+    .blog-grid{grid-template-columns:1fr;}
+  }
+  @media (max-width:560px){
+    .grid-features{grid-template-columns:1fr;}
+    .navcta .btn-ghost{display:none;}
+  }
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap navrow">
+    <a class="brand" href="#" style="text-decoration:none;"><span class="mark">अ</span>ApnaAlgo <span class="hindi">· अपना Algo</span></a>
+    <nav class="links">
+      <a href="#product">Product</a>
+      <a href="#how">How it works</a>
+      <a href="#brokers">Brokers</a>
+      <a href="#pricing">Pricing</a>
+      <a href="#blog">Blog</a>
+    </nav>
+    <div class="navcta">
+      <a class="btn btn-ghost" href="#login">Log in</a>
+      <a class="btn btn-primary" href="#request">Request Access</a>
+    </div>
+    <button class="navtoggle" id="navToggle" aria-label="Open menu" aria-expanded="false">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+  <nav class="mobile-links" id="mobileLinks" hidden>
+    <a href="#product">Product</a>
+    <a href="#how">How it works</a>
+    <a href="#brokers">Brokers</a>
+    <a href="#pricing">Pricing</a>
+    <a href="#blog">Blog</a>
+    <a href="#login">Log in</a>
+    <a class="btn btn-primary" href="#request" style="justify-content:center;">Request Access</a>
+  </nav>
+  <div class="ticker-wrap" aria-hidden="true">
+    <div class="ticker-track" id="tickerTrack"></div>
+  </div>
+</header>
+
+<main id="view-home">
+<section class="hero">
+  <div class="wrap hero-grid">
+    <div class="reveal">
+      <span class="eyebrow"><span class="dot" id="eyebrowDot"></span> Server-side exits, live on NIFTY right now</span>
+      <h1>Close the laptop.<br>The exit <span class="accent" id="accentWord">still fires</span>.</h1>
+      <p class="lede">ApnaAlgo is an options execution terminal for Indian markets. Build a strategy, check the payoff and Greeks, then arm exit rules that keep running on the server after you shut the lid.</p>
+      <div class="hero-ctas">
+        <a class="btn btn-primary" href="#request">Request Access</a>
+        <a class="btn btn-ghost" href="#how">See how it works</a>
+      </div>
+    </div>
+
+    <div class="pulse-card reveal" style="transition-delay:120ms" id="pulseCard">
+      <div class="pulse-top">
+        <div>
+          <div class="pulse-label">Reference index</div>
+          <div class="pulse-index">NIFTY 50</div>
+        </div>
+        <div class="pulse-badge" id="pulseBadge">
+          <svg id="pulseArrow" width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M12 4l8 10H4l8-10z" fill="currentColor"/></svg>
+          <span id="pulseState">Trending up</span>
+        </div>
+      </div>
+      <div class="pulse-price mono" id="pulsePrice">24,062.40</div>
+      <div class="pulse-change mono" id="pulseChange">▲ 82.30 (0.34%)</div>
+      <svg class="pulse-spark" id="pulseSpark" viewBox="0 0 320 64" preserveAspectRatio="none"></svg>
+      <div class="pulse-foot">
+        <span>Simulated preview feed</span>
+        <span id="pulseTime">Updates every few seconds</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section style="padding-block:0 8px;">
+  <div class="wrap">
+    <div class="stat-row">
+      <div class="stat-item reveal"><span class="stat-num" data-count="6">6</span><span class="stat-label">Indices</span></div>
+      <div class="stat-item reveal" style="transition-delay:60ms"><span class="stat-num" data-count="41">41</span><span class="stat-label">Live strikes / chain</span></div>
+      <div class="stat-item reveal" style="transition-delay:120ms"><span class="stat-num" data-count="14">14</span><span class="stat-label">Pre-built structures</span></div>
+      <div class="stat-item reveal" style="transition-delay:180ms"><span class="stat-num" data-count="3">3</span><span class="stat-label">Steps to a deployed rule</span></div>
+    </div>
+  </div>
+</section>
+
+<section id="product">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <span class="kicker">Product</span>
+      <h2>One terminal, six indices, real order flow</h2>
+      <p>41 live option strikes per chain, straddle and strangle views out of the box, and a strategy builder that goes from idea to deployed rule in a few clicks.</p>
+    </div>
+    <div class="chiprow">
+      <span class="chip on">NIFTY</span>
+      <span class="chip">BANKNIFTY</span>
+      <span class="chip">FINNIFTY</span>
+      <span class="chip">MIDCPNIFTY</span>
+      <span class="chip">SENSEX</span>
+      <span class="chip">BANKEX</span>
+    </div>
+    <div class="grid-features">
+      <div class="fcard reveal">
+        <span class="pill">Color-coded</span>
+        <h3>An option chain you can read in seconds</h3>
+        <p>Calls on the left, puts on the right, the ATM row highlighted. LTP, OI and IV sit right where you need them — no separate lookup.</p>
+        <svg class="spark-mini" viewBox="0 0 200 34"><path d="M0 26 L30 20 L60 24 L90 10 L120 14 L150 4 L200 8" fill="none" stroke="var(--brand)" stroke-width="2"/></svg>
+      </div>
+      <div class="fcard reveal" style="transition-delay:60ms">
+        <span class="pill">One click</span>
+        <h3>Straddle and strangle, fired together</h3>
+        <p>The quick-trade bar sends both legs at once. A confirm box shows the exact order and margin before anything is sent.</p>
+        <svg class="spark-mini" viewBox="0 0 200 34"><path d="M0 30 L50 30 L90 6 L120 6 L160 28 L200 28" fill="none" stroke="var(--brand)" stroke-width="2"/></svg>
+      </div>
+      <div class="fcard reveal" style="transition-delay:120ms">
+        <span class="pill">Live</span>
+        <h3>Payoff, Greeks &amp; four numbers that matter</h3>
+        <p>Max profit, max loss, breakeven and probability of profit update as you build — with delta, gamma, theta and vega per leg.</p>
+        <svg class="spark-mini" viewBox="0 0 200 34"><path d="M0 30 L50 30 L90 6 L120 6 L160 28 L200 28" fill="none" stroke="var(--brand)" stroke-width="2"/></svg>
+      </div>
+      <div class="fcard reveal">
+        <span class="pill">Server-side</span>
+        <h3>Exit rules that outlive your session</h3>
+        <p>Arm stop-loss, target and trailing-SL once. They keep running on ApnaAlgo's server even after you close the laptop.</p>
+        <svg class="spark-mini" viewBox="0 0 200 34"><path d="M0 18 L40 18 L40 30 L90 30 L90 6 L140 6 L140 22 L200 22" fill="none" stroke="var(--brand)" stroke-width="2"/></svg>
+      </div>
+      <div class="fcard reveal" style="transition-delay:60ms">
+        <span class="pill">Connected</span>
+        <h3>Trades where your broker executes</h3>
+        <p>Test the API connection once — it turns green when it's live. Orders then route straight through your own broker account.</p>
+        <svg class="spark-mini" viewBox="0 0 200 34"><path d="M0 22 L30 22 L30 8 L70 8 L70 26 L110 26 L110 4 L150 4 L150 18 L200 18" fill="none" stroke="var(--brand)" stroke-width="2"/></svg>
+      </div>
+      <div class="fcard reveal" style="transition-delay:120ms">
+        <span class="pill">Automatic</span>
+        <h3>Journal &amp; Schedule Trade</h3>
+        <p>Every square-off lands in your Journal on its own — P&amp;L, charges, notes. Schedule a strategy to fire itself at a set time, paper or live.</p>
+        <svg class="spark-mini" viewBox="0 0 200 34"><path d="M0 22 L30 22 L30 8 L70 8 L70 26 L110 26 L110 4 L150 4 L150 18 L200 18" fill="none" stroke="var(--brand)" stroke-width="2"/></svg>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="how" style="background:var(--surface-2);">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <span class="kicker">How it works</span>
+      <h2>Three steps from idea to armed position</h2>
+    </div>
+    <div class="steps">
+      <div class="step reveal">
+        <span class="num">01</span>
+        <h3>Build &amp; review</h3>
+        <p>Pick strikes off the live chain, choose a structure, and check payoff and Greeks before you commit to anything.</p>
+      </div>
+      <div class="step reveal" style="transition-delay:80ms">
+        <span class="num">02</span>
+        <h3>Deploy through your broker</h3>
+        <p>Send the strategy to your connected broker account. Orders execute exactly where your capital already sits.</p>
+      </div>
+      <div class="step reveal" style="transition-delay:160ms">
+        <span class="num">03</span>
+        <h3>Arm exit rules</h3>
+        <p>Set stop-loss, target and trailing-SL. The rule sits on ApnaAlgo's server, watching the position after you're gone.</p>
+      </div>
+    </div>
+    <div class="safety-note reveal">
+      <strong>A server-side rule can only reduce or exit a position that already exists.</strong> It can never open a new live position on its own — armed rules watch and close, they don't initiate.
+    </div>
+  </div>
+</section>
+
+<section id="brokers">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <span class="kicker">Brokers</span>
+      <h2>Connect the broker you already trade with</h2>
+      <p>Market data and order execution run through your own broker credentials, stored locally on your machine — never on ApnaAlgo's servers.</p>
+    </div>
+    <div class="brokerrow">
+      <div class="brokercard reveal">
+        <span class="tag">Market data</span>
+        <h3>Dhan</h3>
+        <p>Live option chain, spot and Greeks stream directly from your Dhan account.</p>
+      </div>
+      <div class="brokercard reveal" style="transition-delay:80ms">
+        <span class="tag">Order execution</span>
+        <h3>XTS-based brokers</h3>
+        <p>Place and manage orders through any XTS-compatible broker connection.</p>
+      </div>
+      <div class="brokercard reveal" style="transition-delay:160ms">
+        <span class="tag">More on request</span>
+        <h3>Other brokers</h3>
+        <p>Trading with someone else? Tell us who — new integrations are added by demand.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="pricing" style="background:var(--surface-2);">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <span class="kicker">Pricing</span>
+      <h2>One fee. Your broker handles the rest.</h2>
+      <p>ApnaAlgo charges for software access only — brokerage, STT, stamp duty, exchange charges and GST are billed by your broker as usual.</p>
+    </div>
+    <div class="pricing-card reveal">
+      <span class="ptag">Full access</span>
+      <h3>ApnaAlgo Terminal</h3>
+      <div class="price mono quote">Request a Quote</div>
+      <p style="color:var(--text-muted);font-size:.92rem;margin-top:8px;">Tell us your index, lot size and how many strategies you run — we'll send a plan that fits.</p>
+      <ul class="pricing-list">
+        <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 12l5 5L20 6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg> All six indices, 41 live strikes per chain</li>
+        <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 12l5 5L20 6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg> 14 pre-built structures + custom leg builder</li>
+        <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 12l5 5L20 6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg> Unlimited server-side exit rules</li>
+        <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 12l5 5L20 6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg> Windows 10/11 desktop app, 64-bit</li>
+      </ul>
+      <a class="btn btn-primary" href="#request" style="margin-top:22px;width:100%;">Request a Quote</a>
+      <div class="pricing-foot">Broker charges (brokerage, STT, stamp duty, exchange fees, GST) are separate and billed by your broker.</div>
+    </div>
+  </div>
+</section>
+
+<section id="request">
+  <div class="wrap">
+    <div class="cta-band">
+      <div>
+        <h2>Ready to arm your first exit rule?</h2>
+        <p>Leave your details and we'll set up access to the desktop terminal — no card required to get on the list.</p>
+      </div>
+      <div>
+        <form class="request" id="requestForm">
+          <input type="text" id="rName" placeholder="Full name" required>
+          <input type="email" id="rEmail" placeholder="Email address" required>
+          <input type="tel" id="rPhone" placeholder="Phone number">
+          <button class="btn btn-primary" type="submit">Request Access</button>
+          <div class="success-msg" id="successMsg">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 12l5 5L20 6" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            You're on the list — we'll email you next steps.
+          </div>
+          <div class="form-note">Windows 10/11, 64-bit desktop app. Broker credentials stay on your device.</div>
+        </form>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-grid">
+      <div class="brand"><span class="mark">अ</span>ApnaAlgo</div>
+      <div class="foot-links">
+        <a href="#product">Product</a>
+        <a href="#how">How it works</a>
+        <a href="#brokers">Brokers</a>
+        <a href="#pricing">Pricing</a>
+      </div>
+    </div>
+    <div class="disclaimer">
+      Trading in options involves substantial risk of loss and is not suitable for every investor. ApnaAlgo is a software execution tool only — it does not provide investment advice, hold client funds, or guarantee outcomes. All trades route through your own connected broker account and are subject to that broker's terms, margins and charges. Past performance of any strategy is not indicative of future results. © ApnaAlgo.
+    </div>
+  </div>
+</footer>
+</main>
+
+<main id="view-auth" hidden>
+  <section style="padding-block:72px;">
+    <div class="wrap" style="max-width:440px;">
+      <a href="#" style="font-size:.85rem;color:var(--text-muted);text-decoration:none;">&larr; Back to ApnaAlgo</a>
+      <div class="auth-card">
+        <div class="auth-tabs">
+          <button type="button" class="auth-tab" id="tabLogin">Log in</button>
+          <button type="button" class="auth-tab" id="tabSignup">Sign up</button>
+        </div>
+
+        <form class="request" id="loginForm">
+          <h2 style="font-size:1.25rem;font-family:'Sora',sans-serif;">Welcome back</h2>
+          <input id="loginEmail" type="email" placeholder="Email address" required>
+          <input id="loginPassword" type="password" placeholder="Password" required>
+          <div style="display:flex;justify-content:flex-end;margin-top:-4px;"><a href="#" style="font-size:.8rem;color:var(--text-muted);">Forgot password?</a></div>
+          <button class="btn btn-primary" type="submit">Log in</button>
+          <div class="success-msg" id="loginSuccess">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 12l5 5L20 6" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Preview only — sign-in isn't wired up yet.
+          </div>
+          <p class="form-note">New to ApnaAlgo? <a href="#signup" style="color:var(--brand);font-weight:600;">Create an account</a></p>
+        </form>
+
+        <form class="request" id="signupForm" hidden>
+          <h2 style="font-size:1.25rem;font-family:'Sora',sans-serif;">Create your account</h2>
+          <input id="signupName" type="text" placeholder="Full name" required>
+          <input id="signupEmail" type="email" placeholder="Email address" required>
+          <input id="signupPhone" type="tel" placeholder="Phone number">
+          <input id="signupPassword" type="password" placeholder="Password" required>
+          <button class="btn btn-primary" type="submit">Create account</button>
+          <div class="success-msg" id="signupSuccess">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 12l5 5L20 6" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Preview only — account creation isn't wired up yet.
+          </div>
+          <p class="form-note">Already have an account? <a href="#login" style="color:var(--brand);font-weight:600;">Log in</a></p>
+        </form>
+      </div>
+    </div>
+  </section>
+</main>
+
+<main id="view-blog" hidden>
+  <section style="padding-block:72px;">
+    <div class="wrap">
+      <a href="#" style="font-size:.85rem;color:var(--text-muted);text-decoration:none;">&larr; Back to ApnaAlgo</a>
+      <div class="section-head reveal" style="margin-top:20px;">
+        <span class="kicker">Blog</span>
+        <h2>Notes on options, exits and the terminal</h2>
+        <p>Short, practical reads on how the platform and the market behind it actually work.</p>
+      </div>
+      <div class="blog-grid" id="blogGrid"></div>
+    </div>
+  </section>
+</main>
+
+<main id="view-post" hidden>
+  <section style="padding-block:72px;">
+    <div class="wrap" style="max-width:680px;">
+      <a href="#blog" style="font-size:.85rem;color:var(--text-muted);text-decoration:none;">&larr; Back to blog</a>
+      <span id="postTag" class="blog-tag" style="display:block;margin-top:22px;"></span>
+      <h1 id="postTitle" style="font-family:'Sora',sans-serif;font-weight:700;font-size:clamp(1.6rem,3vw,2.3rem);margin-top:10px;text-wrap:balance;"></h1>
+      <div id="postMeta" class="mono" style="font-size:.8rem;color:var(--text-muted);margin-top:10px;"></div>
+      <div id="postBody" style="margin-top:28px;display:flex;flex-direction:column;gap:16px;font-size:1.03rem;line-height:1.7;"></div>
+    </div>
+  </section>
+</main>
+
+<script>
+(function(){
+  var price = 24062.40, base = price;
+  var history = [];
+  for (var i=0;i<40;i++){ history.push(price); }
+
+  var priceEl = document.getElementById('pulsePrice');
+  var changeEl = document.getElementById('pulseChange');
+  var badge = document.getElementById('pulseBadge');
+  var stateEl = document.getElementById('pulseState');
+  var arrow = document.getElementById('pulseArrow');
+  var sparkEl = document.getElementById('pulseSpark');
+  var accentWord = document.getElementById('accentWord');
+  var eyebrowDot = document.getElementById('eyebrowDot');
+  var root = document.documentElement;
+
+  function fmt(n){ return n.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2}); }
+
+  function render(){
+    var change = price - base;
+    var pct = (change/base*100);
+    var up = change >= 0;
+
+    priceEl.textContent = fmt(price);
+    changeEl.textContent = (up ? '▲ ' : '▼ ') + fmt(Math.abs(change)) + ' (' + Math.abs(pct).toFixed(2) + '%)';
+    stateEl.textContent = up ? 'Trending up' : 'Trending down';
+    arrow.style.transform = up ? 'rotate(0deg)' : 'rotate(180deg)';
+    accentWord.textContent = up ? 'still fires' : 'still catches it';
+
+    var marketVar = up ? 'var(--up)' : 'var(--down)';
+    var softVar = up
+      ? 'color-mix(in srgb, var(--up) 16%, transparent)'
+      : 'color-mix(in srgb, var(--down) 16%, transparent)';
+    root.style.setProperty('--market', marketVar);
+    root.style.setProperty('--market-soft', softVar);
+
+    drawSpark();
+  }
+
+  function drawSpark(){
+    var w = 320, h = 64, pad = 4;
+    var min = Math.min.apply(null, history), max = Math.max.apply(null, history);
+    var range = (max - min) || 1;
+    var step = (w - pad*2) / (history.length - 1);
+    var pts = history.map(function(v,i){
+      var x = pad + i*step;
+      var y = h - pad - ((v - min)/range) * (h - pad*2);
+      return x.toFixed(1) + ',' + y.toFixed(1);
+    });
+    var up = price >= base;
+    var stroke = up ? 'var(--up)' : 'var(--down)';
+    var last = pts[pts.length-1].split(',');
+    sparkEl.innerHTML =
+      '<polyline points="' + pts.join(' ') + '" fill="none" stroke="' + stroke + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>' +
+      '<circle cx="' + last[0] + '" cy="' + last[1] + '" r="3.2" fill="' + stroke + '"/>';
+  }
+
+  function tick(){
+    var drift = (Math.random() - 0.48) * 22;
+    price = Math.max(base - 260, Math.min(base + 260, price + drift));
+    history.push(price);
+    if (history.length > 40) history.shift();
+    render();
+  }
+
+  render();
+  var timer = setInterval(tick, 2600);
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches){
+    clearInterval(timer);
+  }
+
+  var form = document.getElementById('requestForm');
+  var success = document.getElementById('successMsg');
+  form.addEventListener('submit', function(e){
+    e.preventDefault();
+    success.classList.add('show');
+    form.querySelectorAll('input').forEach(function(i){ i.disabled = true; });
+    form.querySelector('button').disabled = true;
+  });
+
+  /* ---- mobile nav ---- */
+  var navToggle = document.getElementById('navToggle');
+  var mobileLinks = document.getElementById('mobileLinks');
+  navToggle.addEventListener('click', function(){
+    mobileLinks.hidden = !mobileLinks.hidden;
+    navToggle.setAttribute('aria-expanded', String(!mobileLinks.hidden));
+  });
+  mobileLinks.querySelectorAll('a').forEach(function(a){
+    a.addEventListener('click', function(){ mobileLinks.hidden = true; });
+  });
+
+  /* ---- auth tabs ---- */
+  var loginForm = document.getElementById('loginForm');
+  var signupForm = document.getElementById('signupForm');
+  var tabLogin = document.getElementById('tabLogin');
+  var tabSignup = document.getElementById('tabSignup');
+
+  function setAuthTab(tab){
+    var isLogin = tab !== 'signup';
+    loginForm.hidden = !isLogin;
+    signupForm.hidden = isLogin;
+    tabLogin.classList.toggle('active', isLogin);
+    tabSignup.classList.toggle('active', !isLogin);
+  }
+  tabLogin.addEventListener('click', function(){ location.hash = 'login'; });
+  tabSignup.addEventListener('click', function(){ location.hash = 'signup'; });
+
+  function previewSubmit(form, msg){
+    form.addEventListener('submit', function(e){
+      e.preventDefault();
+      msg.classList.add('show');
+      form.querySelectorAll('input').forEach(function(i){ i.disabled = true; });
+      form.querySelector('button[type=submit]').disabled = true;
+    });
+  }
+  previewSubmit(loginForm, document.getElementById('loginSuccess'));
+  previewSubmit(signupForm, document.getElementById('signupSuccess'));
+
+  /* ---- blog ---- */
+  var POSTS = [
+    {
+      slug: 'server-side-exits',
+      tag: 'Product',
+      title: 'Laptop band, par exit chalta rahta hai — kaise?',
+      date: 'Jan 12, 2026',
+      read: '4 min read',
+      excerpt: "Sirf dimaag me socha hua stop-loss, ya band pade app ka stop-loss — wo stop-loss hai hi nahi. Dekhte hain server-side rules asal me kaam kaise karte hain.",
+      body: [
+        "Zyada tar retail options tools exit logic aapke apne machine par chalate hain. Laptop band kiya, wifi gaya, ya battery khatam hui — jo rule position bachane ke liye tha, wo bhi saath hi chala jaata hai.",
+        "ApnaAlgo me jaise hi aap strategy deploy karte ho, exit rules seedha server par arm ho jaate hain. Stop-loss, target aur trailing-SL live feed ke against continuously check hote hain — desktop app khula ho ya band, farak nahi padta.",
+        "Ek baat hamesha yaad rakhna: server-side rule sirf existing position ko kam ya exit kar sakta hai. Ye kabhi khud se naya live position nahi khol sakta. Ye sirf dekhta hai aur band karta hai — shuru nahi karta.",
+        "Matlab yeh ki aap subah ek straddle banao, trailing stop arm karo, aur apne din me lag jao. Rule tab bhi dekh raha hota hai jab aap wahan nahi ho."
+      ]
+    },
+    {
+      slug: 'reading-the-chain',
+      tag: 'Guide',
+      title: 'Option chain padhna: ATM, OI aur IV ek nazar me',
+      date: 'Jan 5, 2026',
+      read: '5 min read',
+      excerpt: "Calls left me, Puts right me, ek highlighted row. Chain ka har column asal me aapko kya bata raha hai — samjhte hain.",
+      body: [
+        "Chain terminal ka sabse busy screen hai, aur usme har cheez kisi na kisi decision se judi hoti hai. Calls left side, Puts right side, aur beech me strike column chalta hai.",
+        "Highlighted row hamesha wahi hota hai jo live index ke sabse paas ka strike hai — yaani ATM strike. Yahi aapka reference point hai ki koi aur row kitni door out-of-the-money hai.",
+        "LTP us contract ka last traded price hai. OI batata hai ki us strike par abhi kitne contracts open hain — market kahan position bana raha hai, uska ek rough andaza. IV batata hai ki options abhi kitne mehenge hain, direction se alag hatke.",
+        "Jis din aap sirf price nahi, OI aur IV bhi padhne lagte ho, chain numbers ki deewar nahi rehta — market kahan khada hai, uska naksha ban jaata hai."
+      ]
+    },
+    {
+      slug: 'straddle-vs-strangle',
+      tag: 'Strategy',
+      title: 'Straddle vs Strangle: range-bound NIFTY ke liye sahi structure kaunsa',
+      date: 'Dec 22, 2025',
+      read: '6 min read',
+      excerpt: "Dono ka daav ek hi hai — index zyada nahi hilega. Farak aata hai premium, breakeven width aur aap kitni jagah dena chahte ho, usme.",
+      body: [
+        "Short straddle ATM call aur put dono ek hi strike par bechta hai. Dono structures me sabse zyada premium yehi collect karta hai, lekin breakeven range sabse tang hota hai — index ko underwater hone me zyada door nahi jaana padta.",
+        "Short strangle iske bajaye out-of-the-money call aur put bechta hai. Premium kam milta hai, lekin aapko dono taraf zyada room mil jaata hai jahan trade profitable rehta hai.",
+        "Koi ek 'better' nahi hai — dono premium collect karne aur error ke liye room dene ke beech trade-off hain. Straddle us din ke liye hai jab aapko lage index sach me chup baithega. Strangle thoda income chhod kar dono taraf cushion de deta hai.",
+        "Dono ek click me ho jaate hain: Straddle ya Strangle choose karo, apne strikes chuno ya ATM ko khud select karne do, aur Sell dabao. Confirm box bhejne se pehle net credit aur margin dikha deta hai."
+      ]
+    },
+    {
+      slug: 'connecting-a-broker',
+      tag: 'Setup',
+      title: 'Dhan ya XTS broker ko ApnaAlgo se connect karna',
+      date: 'Dec 10, 2025',
+      read: '3 min read',
+      excerpt: 'Credentials aapke apne machine par rehte hain. Dekhte hain Test Connection dabane par asal me hota kya hai.',
+      body: [
+        "ApnaAlgo aapke broker credentials apne server par kabhi store nahi karta. Jab aap broker connect karte ho, keys sirf aapke apne device par save hoti hain.",
+        "Market data abhi Dhan se stream hota hai, aur order execution kisi bhi XTS-based broker connection se chalta hai. Settings kholo, API Management choose karo, aur Connect New API dabao.",
+        "Broker ne jo keys di hain wo paste karo, phir Test Connection dabao. Connection live hote hi ye green ho jaata hai — jab tak ye indicator green nahi hota, kuch bhi trade nahi hota.",
+        "Aap ek se zyada broker ID save kar sakte ho aur safely unke beech switch kar sakte ho — kaam aata hai jab alag-alag strategies ke liye alag accounts chalane ho."
+      ]
+    }
+  ];
+
+  var blogGrid = document.getElementById('blogGrid');
+  POSTS.forEach(function(p, i){
+    var a = document.createElement('a');
+    a.className = 'blog-card reveal';
+    a.style.transitionDelay = (i % 2) * 60 + 'ms';
+    a.href = '#blog-' + p.slug;
+    a.innerHTML = '<span class="blog-tag">' + p.tag + '</span>' +
+      '<h3>' + p.title + '</h3>' +
+      '<p>' + p.excerpt + '</p>' +
+      '<div class="blog-meta">' + p.date + ' · ' + p.read + '</div>';
+    blogGrid.appendChild(a);
+  });
+
+  function renderPost(slug){
+    var p = POSTS.filter(function(x){ return x.slug === slug; })[0] || POSTS[0];
+    document.getElementById('postTag').textContent = p.tag;
+    document.getElementById('postTitle').textContent = p.title;
+    document.getElementById('postMeta').textContent = p.date + ' · ' + p.read;
+    var bodyEl = document.getElementById('postBody');
+    bodyEl.innerHTML = '';
+    p.body.forEach(function(para){
+      var el = document.createElement('p');
+      el.textContent = para;
+      bodyEl.appendChild(el);
+    });
+  }
+
+  /* ---- ticker tape ---- */
+  var TICKER = [
+    { sym: 'NIFTY', price: '24,062.40', chg: '+0.34%', up: true },
+    { sym: 'BANKNIFTY', price: '51,284.15', chg: '+0.51%', up: true },
+    { sym: 'FINNIFTY', price: '23,118.70', chg: '-0.18%', up: false },
+    { sym: 'MIDCPNIFTY', price: '12,845.30', chg: '+0.22%', up: true },
+    { sym: 'SENSEX', price: '79,342.85', chg: '-0.09%', up: false },
+    { sym: 'BANKEX', price: '58,910.60', chg: '+0.41%', up: true }
+  ];
+  var tickerTrack = document.getElementById('tickerTrack');
+  if (tickerTrack){
+    var tickerHTML = TICKER.map(function(t){
+      return '<span class="ticker-item"><span class="sym">' + t.sym + '</span>' +
+        '<span class="mono">' + t.price + '</span>' +
+        '<span class="chg ' + (t.up ? 'up' : 'down') + '">' + (t.up ? '▲' : '▼') + ' ' + t.chg + '</span></span>';
+    }).join('');
+    tickerTrack.innerHTML = tickerHTML + tickerHTML;
+  }
+
+  /* ---- scroll reveal + count-up ---- */
+  var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function countUp(el){
+    var target = parseInt(el.getAttribute('data-count'), 10) || 0;
+    if (reduceMotion){ el.textContent = target; return; }
+    var start = null, duration = 900;
+    function step(ts){
+      if (!start) start = ts;
+      var progress = Math.min((ts - start) / duration, 1);
+      var eased = 1 - Math.pow(1 - progress, 3);
+      el.textContent = Math.round(eased * target);
+      if (progress < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+
+  var revealEls = document.querySelectorAll('.reveal');
+  if ('IntersectionObserver' in window && !reduceMotion){
+    revealEls.forEach(function(el){ el.classList.add('pre'); });
+    var revealObserver = new IntersectionObserver(function(entries){
+      entries.forEach(function(entry){
+        if (entry.isIntersecting){
+          entry.target.classList.add('in');
+          var statNum = entry.target.querySelector('.stat-num');
+          if (statNum && !statNum.dataset.counted){
+            statNum.dataset.counted = '1';
+            countUp(statNum);
+          }
+          revealObserver.unobserve(entry.target);
+        }
+      });
+    }, { threshold: 0.15, rootMargin: '0px 0px -40px 0px' });
+    revealEls.forEach(function(el){ revealObserver.observe(el); });
+  } else {
+    revealEls.forEach(function(el){
+      var statNum = el.querySelector('.stat-num');
+      if (statNum) countUp(statNum);
+    });
+  }
+
+  /* ---- spotlight hover ---- */
+  document.querySelectorAll('.fcard, .brokercard').forEach(function(card){
+    card.addEventListener('mousemove', function(e){
+      var rect = card.getBoundingClientRect();
+      card.style.setProperty('--mx', (e.clientX - rect.left) + 'px');
+      card.style.setProperty('--my', (e.clientY - rect.top) + 'px');
+    });
+  });
+
+  /* ---- view routing ---- */
+  var views = {
+    home: document.getElementById('view-home'),
+    auth: document.getElementById('view-auth'),
+    blog: document.getElementById('view-blog'),
+    post: document.getElementById('view-post')
+  };
+
+  function routeFor(hash){
+    if (hash === 'login' || hash === 'signup') return 'auth';
+    if (hash === 'blog') return 'blog';
+    if (hash.indexOf('blog-') === 0) return 'post';
+    return 'home';
+  }
+
+  function applyRoute(){
+    var hash = location.hash.replace('#', '');
+    var route = routeFor(hash);
+    Object.keys(views).forEach(function(k){ views[k].hidden = (k !== route); });
+
+    if (route === 'auth') setAuthTab(hash);
+    if (route === 'post') renderPost(hash.replace('blog-', ''));
+
+    if (route === 'home' && hash && document.getElementById(hash)) {
+      requestAnimationFrame(function(){
+        document.getElementById(hash).scrollIntoView();
+      });
+    } else if (route !== 'home' || !hash) {
+      window.scrollTo(0, 0);
+    }
+  }
+
+  window.addEventListener('hashchange', applyRoute);
+  applyRoute();
+})();
+</script>
+</body>
+</html>
