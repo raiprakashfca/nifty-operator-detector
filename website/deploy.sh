@@ -3,7 +3,6 @@
 URL=https://raw.githubusercontent.com/raiprakashfca/nifty-operator-detector/claude/admiring-planck-nvpl8v/website/index.html
 echo "== 1. find web root =="
 ROOT=$(nginx -T 2>/dev/null | awk '/server_name/ && /apnaalgo\.ai/ {f=1} f && $1=="root" {gsub(";","",$2); print $2; exit}')
-[ -z "$ROOT" ] && ROOT=$(nginx -T 2>/dev/null | awk '$1=="root"{gsub(";","",$2); print $2; exit}')
 echo "ROOT=$ROOT"
 if [ -z "$ROOT" ] || [ ! -d "$ROOT" ]; then
   nginx -T 2>/dev/null | grep -nE 'server_name|root|listen'
